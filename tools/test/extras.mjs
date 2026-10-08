@@ -34,6 +34,43 @@ const pad = await p.evaluate(() => {
 });
 const steer = pad.filter((x) => /steer/.test(x.c)).map((x) => x.l), gas = pad.find((x) => /gas/.test(x.c));
 check(gas && steer.every((l) => l > gas.l), `left-handed: gas on the left (${gas && gas.l}), steering on the right (${steer})`);
+// the second nitro: centred over the steering pair, in both layouts, and it works
+const geom = () => p.evaluate(() => {
+  const R = (e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2 }; };
+  const st = [...document.querySelectorAll('#touch .tbtn.steer')].map(R), n2 = document.querySelector('#touch .tbtn.nitro2');
+  return { nitros: document.querySelectorAll('#touch .tbtn.nitro').length, n2: n2 && R(n2), st };
+});
+for (const side of ['left', 'right']) {
+  await p.evaluate((side) => { const g = window.__game; g.opt.touchSide = side; g.touch.layout(); }, side);
+  const gm = await geom();
+  const lo = Math.min(...gm.st.map((r) => r.l)), hi = Math.max(...gm.st.map((r) => r.r)), top = Math.min(...gm.st.map((r) => r.t));
+  check(gm.nitros === 2 && gm.n2 && gm.n2.b < top && gm.n2.cx > lo && gm.n2.cx < hi,
+    `${side === 'left' ? 'left-handed' : 'right-handed'}: second NITRO above the steering pair (${gm.n2 && Math.round(gm.n2.cx)} between ${Math.round(lo)}-${Math.round(hi)}, bottom ${gm.n2 && Math.round(gm.n2.b)} < ${Math.round(top)})`);
+}
+await p.waitForFunction(() => window.__game.race.state === 'race' && window.__game.race.time > 0.5, null, { timeout: 120000, polling: 300 });
+const n2 = (await geom()).n2;
+const before = await p.evaluate(() => window.__game.race.racers.find((r) => r.human).truck.nitros);
+await p.touchscreen.tap(n2.cx, n2.cy);
+const fired = await p.waitForFunction((b) => { const t = window.__game.race.racers.find((r) => r.human).truck; return t.nitroT > 0 || t.nitros < b; }, before, { timeout: 8000, polling: 50 }).then(() => true, () => false);
+check(fired, 'tapping the second NITRO fires the nitro');
+await p.waitForFunction(() => window.__game.race.racers.find((r) => r.human).truck.nitroT <= 0, null, { timeout: 30000, polling: 200 }).catch(() => {});
+await p.screenshot({ path: OUT.replace('.png', '_pad.png'), timeout: 120000 });
+
+// the BOTÓN DE NITRO option, through the real menus: pause -> options -> change -> back -> resume
+for (const want of [['gas', 'EN EL GAS', 1, false], ['steer', 'EN EL GIRO', 1, true], ['both', 'LOS DOS', 2, true]]) {
+  await p.evaluate(() => window.__game.pause());
+  await p.evaluate(() => document.querySelector('#pause [data-a=opts]').click());
+  await p.waitForSelector('#options [data-k=nitroPos]');
+  await p.evaluate(() => document.querySelector('#options [data-k=nitroPos]').click());
+  const lab = await p.evaluate(() => document.querySelector('#options [data-k=nitroPos] .val').textContent);
+  await p.evaluate(() => document.querySelector('#options [data-k=back]').click());
+  await p.waitForSelector('#pause [data-a=resume]');
+  await p.evaluate(() => document.querySelector('#pause [data-a=resume]').click());
+  await p.waitForTimeout(400);
+  const pad = await p.evaluate(() => ({ n: document.querySelectorAll('#touch .tbtn.nitro').length, two: !!document.querySelector('#touch .tbtn.nitro2'), opt: window.__game.opt.nitroPos }));
+  check(lab === want[1] && pad.opt === want[0] && pad.n === want[2] && pad.two === want[3], `option BOTÓN DE NITRO = ${lab}: ${pad.n} nitro button(s)${pad.two ? ', one over the steering' : ''}`);
+}
+
 // nitro: speed streaks while it lasts (after the green light)
 await p.waitForFunction(() => window.__game.race.state === 'race' && window.__game.race.time > 0.5, null, { timeout: 120000, polling: 300 });
 await p.evaluate(() => { const g = window.__game, t = g.race.racers.find((r) => r.human).truck; t.nitros = 5; g.input.players[0].nitroLatch = true; });

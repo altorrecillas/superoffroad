@@ -95,7 +95,7 @@ function trackThumb(def) {
 export class Game {
   constructor() {
     this.opt = Object.assign({
-      quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
+      quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', nitroPos: 'both', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
     }, this._loadOpt());
     this.state = 'boot';
     this.warp = +(params.get('warp') || 1);
@@ -1098,6 +1098,7 @@ export class Game {
       ...(isTouch() ? [
         { k: 'touchSide', name: 'MANDOS', vals: ['right', 'left'], lab: { right: 'DIESTRO', left: 'ZURDO' } },
         { k: 'touchSize', name: 'TAMAÑO BOTONES', short: 'BOTONES', vals: ['s', 'm', 'l'], lab: { s: 'PEQUEÑO', m: 'NORMAL', l: 'GRANDE' } },
+        { k: 'nitroPos', name: 'BOTÓN DE NITRO', short: 'NITRO', vals: ['both', 'gas', 'steer'], lab: { both: 'LOS DOS', gas: 'EN EL GAS', steer: 'EN EL GIRO' } },
       ] : []),
       { k: 'autoGas', name: 'ACELERADOR AUTOMÁTICO', short: 'AUTO-GAS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'fps', name: 'MOSTRAR FPS', short: 'FPS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
@@ -1125,6 +1126,7 @@ export class Game {
       this.saveOpt();
       this.audio.setVolumes(o);
       this.touch.setMode(o.touch);
+      if (d.k === 'nitroPos' && this.touch.visible) { this.touch.show(false); this.touch.show(true); } // rebuild the pad
       this.touch.layout();
       if (d.k === 'camera' && this.race && this.state === 'race') this._raceCamera(false);
       if (d.k === 'fullscreen') { if (o.fullscreen) enterFullscreen(true); else exitFullscreen(); }
@@ -1151,7 +1153,7 @@ export class Game {
         <p>Carreras de 4 vueltas contra los camiones de la CPU. El gris es <b class="gold">Ivan "Ironman" Stewart</b>: si te gana (en dificultad Normal) pierdes un crédito. En Arcade tienes que ganar a todos, como en la recreativa de 1989. Sin créditos, se acaba la partida.</p>
         <p><b>Teclado:</b> ← → girar · ↑ acelerar · ↓ frenar/marcha atrás · ENTER o ESPACIO nitro · ESC pausa.<br>
         <b>Mando:</b> stick o cruceta girar · A acelerar · B frenar · X/RB nitro · START pausa.<br>
-        <b>Táctil:</b> botones de giro a la izquierda, acelerar y nitro a la derecha (o joystick en Opciones).</p>
+        <b>Táctil:</b> botones de giro a la izquierda, acelerar y nitro a la derecha, y otro nitro encima del giro (en Opciones: zurdos, tamaño, qué nitros se ven o joystick).</p>
         <p>Recoge <b style="color:#79c2ff">nitros</b> y <b class="gold">bolsas de dinero</b> en la pista. Con el dinero mejora tu camión en el taller: neumáticos, amortiguadores, aceleración y velocidad punta (5 niveles cada uno), o compra más nitro.</p>
         <p>Puedes correr con el <b>camión</b> (más agarre y velocidad punta, gana los empujones) o con el <b>buggy</b> del <i>Track Pak</i> (acelera más y aterriza mejor los saltos, pero es ligero y derrapa más).</p>
         <p>Hay 16 circuitos (los 8 de la recreativa y los 8 del <i>Track Pak</i>), cada uno en los dos sentidos. En <b>CARRERA LIBRE</b> puedes probar cualquiera, con el sentido y la luz que quieras.</p>

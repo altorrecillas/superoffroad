@@ -57,12 +57,16 @@ export class Touch {
       this.els.left = btn('steer', 'left');
       this.els.right = btn('steer', 'right');
       this.els.gas = this.opt.autoGas ? btn('brake', 'brake', 'FRENO') : btn('gas', 'gas', 'GAS');
-      this.els.nitro = btn('nitro', 'nitro', 'NITRO');
+      // nitro next to the gas and/or over the steering pair (option BOTÓN DE NITRO):
+      // the one over the steering lets that thumb fire it while the other stays on gas
+      const where = this.opt.nitroPos || 'both';
+      if (where !== 'steer') this.els.nitro = btn('nitro', 'nitro', 'NITRO');
+      if (where !== 'gas') this.els.nitro2 = btn('nitro nitro2', 'nitro', 'NITRO');
       this._steerPad(this.els.left, this.els.right);
       if (this.opt.autoGas) this._hold(this.els.gas, (v) => (this.state.brake = v));
       else this._hold(this.els.gas, (v) => (this.state.gas = v));
     }
-    this._hold(this.els.nitro, (v) => { if (v) this.state.nitroLatch = true; });
+    for (const n of [this.els.nitro, this.els.nitro2]) if (n) this._hold(n, (v) => { if (v) this.state.nitroLatch = true; });
     const p = h(`<div class="tpause">${ICON.pause}</div>`);
     p.addEventListener('pointerdown', (e) => { e.preventDefault(); this.onPause && this.onPause(); });
     this.root.appendChild(p);
@@ -93,6 +97,9 @@ export class Touch {
       // mirrored, the pair keeps ◀ on the left of ▶
       place(mirror ? this.els.right : this.els.left, pad, H - s - pad, s);
       place(mirror ? this.els.left : this.els.right, pad + s + pad * 0.8, H - s - pad, s);
+      // centred over the pair, with a gap so a thumb on ◀ ▶ does not catch it
+      const n2 = s * 0.86, pairMid = pad + s + pad * 0.4;
+      place(this.els.nitro2, pairMid - n2 / 2, H - s - pad - Math.max(10, pad * 0.75) - n2, n2);
       place(this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
       place(this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
     }

@@ -41,7 +41,7 @@ El script pregunta a qué repositorio subirlo (o crea uno nuevo, `super-off-road
 | Girar | ← → (o A D) | stick o cruceta | botones ◀ ▶ (o joystick) |
 | Acelerar | ↑ (o W, X) | A / gatillo derecho | GAS |
 | Frenar / marcha atrás | ↓ (o S, C) | B / gatillo izquierdo | — |
-| Nitro | ESPACIO, ENTER o Z | X, Y, RB | NITRO |
+| Nitro | ESPACIO, ENTER o Z | X, Y, RB | NITRO (uno junto al gas y otro encima del giro) |
 | Pausa | ESC o P | START | ❚❚ |
 | Silenciar | M | | |
 
@@ -49,7 +49,7 @@ El giro es **rotacional**, como el volante del arcade: izquierda y derecha hacen
 
 **En el móvil**: se juega en horizontal y a **pantalla completa** (se activa al tocar la pantalla de título y vuelve sola si sales de ella; se puede quitar en Opciones). En el iPhone, Safari no deja poner una web a pantalla completa: hay que usar **Compartir → Añadir a pantalla de inicio**, y desde ese icono el juego se abre sin barras. Los menús se ajustan solos al espacio que haya (con o sin barras del navegador), y los marcadores de la carrera se apartan (se vuelven casi transparentes) cuando un camión pasa por debajo.
 
-En **Opciones** se puede poner el mando táctil para **zurdos** (giro a la derecha, gas y nitro a la izquierda) y elegir el **tamaño de los botones**.
+En **Opciones** se puede poner el mando táctil para **zurdos** (giro a la derecha, gas y nitro a la izquierda), elegir el **tamaño de los botones** y dónde va el **botón de nitro**: hay dos, uno junto al gas y otro encima de las flechas de giro (para lanzarlo con el pulgar del giro sin soltar el gas); se pueden dejar **los dos** o solo uno (**en el gas** o **en el giro**).
 
 **Tu camión** lleva encima una etiqueta **TÚ** (1P, 2P o 3P con varios jugadores) y un aro de su color en el suelo, que en la parrilla parpadea para que te encuentres. **Pellizca la pista** con dos dedos (o usa la rueda del ratón) para acercar o alejar la cámara: alejando del todo se pasa a la vista clásica de todo el estadio, y la cámara elegida se recuerda.
 
