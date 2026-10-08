@@ -13,6 +13,7 @@ import { FX } from './fx.js';
 import { buildWater } from './water.js';
 import { buildProps, PickupViews, loadPropsTemplate } from './props.js';
 import { truckDef } from '../game/drivers.js';
+import { ghostAt } from '../game/ghost.js';
 import { wrapAngle, clamp, lerp } from '../sim/util.js';
 import { TRUCK } from '../sim/truck.js';
 
@@ -195,6 +196,49 @@ export class RaceWorld {
     this.leader = 0;
   }
 
+  // time trial ghost: the recorded best run, a see-through copy of its truck
+  setGhost(g) {
+    if (this.ghost) {
+      this.scene.remove(this.ghost.v.root);
+      this.ghost.v.dispose();
+      for (const m of this.ghost.mats) m.dispose();
+      this.ghost = null;
+    }
+    this.ghostState = null;
+    if (!g) return;
+    const d = truckDef(g.c) || truckDef('red');
+    const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet }, this.templates[g.v] || this.template);
+    const mats = [], seen = new Map();
+    v.root.traverse((o) => {
+      if (!o.isMesh) return;
+      o.castShadow = false; o.receiveShadow = false;
+      o.renderOrder = 5;
+      const ghostly = (m) => {
+        if (seen.has(m)) return seen.get(m);
+        const c = m.clone();
+        c.transparent = true; c.opacity = 0.36; c.depthWrite = false;
+        if (c.emissive) { c.emissive.setRGB(0.12, 0.2, 0.32); c.emissiveIntensity = 1; } // a cold glow so it reads as a ghost
+        seen.set(m, c); mats.push(c);
+        return c;
+      };
+      o.material = Array.isArray(o.material) ? o.material.map(ghostly) : ghostly(o.material);
+    });
+    v.root.visible = false;
+    this.scene.add(v.root);
+    this.ghost = { g, v, mats, st: { x: 0, y: 0, z: 0, h: 0, vf: 0, w: 0, vy: 0, air: false, steer: 0, landKick: 0 } };
+  }
+
+  _updateGhost(dt) {
+    const G = this.ghost, race = this.race;
+    if (!G || !race) return;
+    const st = race.state === 'race' || race.state === 'done' ? ghostAt(G.g, race.time, G.st) : null;
+    G.v.root.visible = !!st;
+    this.ghostState = st;
+    if (!st) return;
+    st.air = st.y - this.track.heightAt(st.x, st.z) > 0.3;
+    G.v.update(st, dt, this.track);
+  }
+
   // practice laps already left tyre tracks along the racing line
   _seedWear() {
     const marks = this.terrain.userData.marks, ln = this.track.line, p = this.track.path;
@@ -363,6 +407,7 @@ export class RaceWorld {
         life: 5 + Math.random() * 3, size: 3, size1: 11, r: night ? 0.45 : 0.42, g: night ? 0.3 : 0.38, b: night ? 0.26 : 0.36, a: 0.4, drag: 0.3, fadeIn: 0.6,
       });
     }
+    this._updateGhost(dt);
     fx.update(dt, (x, z) => track.heightAt(x, z));
     this.pickups.update(dt, race, track);
     this.stadium.update(dt, this.view.camera);

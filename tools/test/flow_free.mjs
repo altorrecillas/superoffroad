@@ -35,7 +35,8 @@ try {
   const info = await page.evaluate(() => { const g = window.__game; return { track: g.world.track.id, rev: g.world.track.reverse, time: g.world.timeName }; });
   console.log('race on', JSON.stringify(info));
   await waitState('results', 300000); await shot('3results');
-  await key('ArrowDown'); await key('Enter'); await waitState('free', 60000); await shot('4back');
+  await page.mouse.move(2, 2); // the pointer left over a button would focus it (hover = focus for mouse users)
+  await page.click('#results [data-a=other]'); await waitState('free', 60000); await shot('4back');
   console.log('OK');
 } catch (e) { console.log('FAIL', e.message); await shot('fail'); }
 console.log(logs.slice(0, 20).join('\n'));

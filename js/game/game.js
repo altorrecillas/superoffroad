@@ -18,6 +18,7 @@ import { Audio } from '../audio/audio.js';
 import { blockPageZoom, enterFullscreen, exitFullscreen, canFullscreen, needsHomeScreen } from '../core/device.js';
 import { TRUCKS, PLAYER_TRUCKS, truckDef } from './drivers.js';
 import { lapKey, lapRecord, submitLap, loadLaps } from './records.js';
+import { GhostRecorder, ghostKey, loadGhost, saveGhost, ghostTimes } from './ghost.js';
 import {
   Session, UPGRADES, UPGRADE_COST, MAX_LEVEL, NITRO_COST, CREDIT_CASH, DIFFICULTY,
   loadScores, qualifies, addScore, fmtMoney,
@@ -94,7 +95,7 @@ function trackThumb(def) {
 export class Game {
   constructor() {
     this.opt = Object.assign({
-      quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
+      quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
     }, this._loadOpt());
     this.state = 'boot';
     this.warp = +(params.get('warp') || 1);
@@ -155,6 +156,7 @@ export class Game {
     this.input.onUI((a, src) => this._globalUI(a, src), 10);
     this._setupZoomGestures();
     this._watchContext();
+    this._trapBack();
     // phones: stay in fullscreen (a tap that lifts the finger is a valid user activation)
     const keepFull = () => { if (this.opt.fullscreen !== false && isTouch()) enterFullscreen(); };
     document.addEventListener('pointerup', keepFull);
@@ -255,11 +257,24 @@ export class Game {
     while (this.acc >= DT && n < 12 * warp) {
       this.world.savePrev();
       race.step(DT, inputs);
+      if (this.trial) this.trial.recorder.step(race);
       for (const ev of race.events) this.frameEvents.push(ev);
       this.input.consumeNitro();
       this.acc -= DT; n++;
     }
     if (n >= 12 * warp) this.acc = 0;
+    // the announcer follows the lead (one player only: with several it would be noise)
+    if (this.state === 'race' && !this.attract && race.state === 'race' && race.time > 4) {
+      const humans = race.racers.filter((r) => r.human);
+      const lead = race.order[0];
+      if (humans.length === 1 && lead && lead !== this._leader) {
+        if (this._leader) {
+          if (lead.human) this.audio.announce('lead', true);
+          else if (lead.entry.ironman && this._leader.human) this.audio.announce('ironman_lead', true);
+        }
+        this._leader = lead;
+      }
+    } else if (race.state === 'countdown') this._leader = null;
     if (this.frameEvents.length) {
       this.world.handleEvents(this.frameEvents);
       this.audio.handle(this.frameEvents, race);
@@ -268,6 +283,8 @@ export class Game {
       for (const ev of this.frameEvents) {
         if (ev[0] === 'racedone') this.onRaceDone();
         if ((ev[0] === 'lap' || ev[0] === 'finish') && ev[3] && this.state === 'race') this._lapDone(ev);
+        if (this.trial && (ev[0] === 'lap' || ev[0] === 'finish') && ev[1] === this.trial.me.i && ev[3]) (this.trial.laps = this.trial.laps || []).push(ev[3]);
+        if (this.state === 'race' && !this.attract) this._callout(ev);
       }
     }
   }
@@ -298,17 +315,28 @@ export class Game {
     this.input.solo = entries.filter((e) => e.human).length <= 1;
     for (let p = 0; p < 3; p++) this.input.autoGas[p] = !!this.opt.autoGas && p === 0;
     const seed = params.get('seed') ? +params.get('seed') : (Math.random() * 1e9) | 0;
-    this.race = new Race(track, entries, { seed, dpa: this.session.diff.dpa, laps: opts.laps ?? (params.get('laps') ? +params.get('laps') : undefined) });
+    // time trial: alone, no pickups, 3 laps, against the ghost of the best run
+    const trial = !this.attract && !!(this.session.free && this.session.free.trial);
+    const laps = opts.laps ?? (params.get('laps') ? +params.get('laps') : trial ? 3 : undefined);
+    this.race = new Race(track, entries, { seed, dpa: this.session.diff.dpa, laps, pickups: !trial });
     this.race.autopilot = params.get('autopilot') === '1';
     this.lapRecordSet = false;
     this.race.autopilotSkill = params.get('apskill') ? +params.get('apskill') : 0.95;
     this.world.setRace(this.race);
+    this.trial = null;
+    if (trial) {
+      const key = ghostKey(id, reverse) + (laps !== 3 ? `-${laps}` : ''); // other lap counts (tests) keep their own ghost
+      const me = this.race.racers.find((r) => r.human);
+      this.trial = { key, rec: loadGhost(key), recorder: new GhostRecorder(me), me };
+    }
+    this.world.setGhost(this.trial && this.trial.rec);
     this.acc = 0;
     this.audio.startRace(this.race);
     if (this.attract) {
       this.world.setCamera('classic', { snap: true });
       return;
     }
+    this.hud.trial = this.trial ? { rec: this.trial.rec } : null;
     this.hud.build(this.race, this.session);
     this.world.refit(); // frame the arena below the board
     this.touch.root.classList.remove('intro');
@@ -321,11 +349,20 @@ export class Game {
     this.world.setCamera('intro', { duration: 5.0 });
     const def = trackById(id);
     const no = this.session.raceNo + 1;
-    this.ui.show('intro', `<div class="banner"><div class="race">${this.session.free ? 'CARRERA LIBRE' : `CARRERA ${no}`}${def.pak ? ' · TRACK PAK' : ''}</div><div class="track">${esc(def.name)}</div>
-      <div class="sub">${reverse ? 'SENTIDO INVERSO · ' : ''}${this.race.laps} ${this.race.laps === 1 ? 'VUELTA' : 'VUELTAS'} · ${DIFFICULTY[this.session.difficulty].name.toUpperCase()}</div>
+    const tr = this.trial;
+    this.ui.show('intro', `<div class="banner"><div class="race">${tr ? 'CONTRARRELOJ' : this.session.free ? 'CARRERA LIBRE' : `CARRERA ${no}`}${def.pak ? ' · TRACK PAK' : ''}</div><div class="track">${esc(def.name)}</div>
+      <div class="sub">${reverse ? 'SENTIDO INVERSO · ' : ''}${this.race.laps} ${this.race.laps === 1 ? 'VUELTA' : 'VUELTAS'} · ${tr ? (tr.rec ? `RÉCORD ${fmtTime(tr.rec.t)} · CON FANTASMA` : 'SIN RÉCORD AÚN') : DIFFICULTY[this.session.difficulty].name.toUpperCase()}</div>
       ${this.session.raceNo === 0 && !this.session.free && this.session.players.length === 1 ? `<div class="howto">${this._controlsLine()}</div>` : ''}</div>`, 'passive');
     this.audio.music('race');
     this.audio.announce('track_' + id);
+  }
+
+  // the announcer's calls on the player's own moments
+  _callout(ev) {
+    const r = this.race.racers[ev[1]];
+    if (!r || !r.human || this.race.racers.filter((x) => x.human).length !== 1) return;
+    if (ev[0] === 'land' && ev[3] > 0.68) this.audio.announce('big_air', true); // the longest jumps of the game last ~0.75 s
+    else if (ev[0] === 'wrongway') this.audio.announce('wrong_way', true);
   }
 
   // a human lap: personal record for this circuit and direction?
@@ -340,7 +377,7 @@ export class Game {
     const who = this.race.racers.filter((x) => x.human).length > 1 ? `${r.entry.player + 1}P ` : '';
     this.ui.toast(`${who}¡Récord de vuelta! ${fmtTime(ev[3])}`, 'money', 2400);
     this.audio.sfx('pickup', { vol: 0.6, vary: 0, rate: 1.25 });
-    if (ev[0] === 'lap' && ev[2] !== this.race.laps - 1) this.audio.announce('new_record');
+    if (ev[0] === 'lap' && ev[2] !== this.race.laps - 1) this.audio.announce('lap_record', true);
   }
 
   // one line with the controls of the device in use (first race of a championship)
@@ -387,6 +424,24 @@ export class Game {
     this._zoomSave = setTimeout(() => this.saveOpt(), 600);
   }
 
+  // Android back button / swipe back: it must not leave the game. A history entry is
+  // pushed on a tap (browsers ignore entries added without one); going back pops it and
+  // acts like the game's own back key (pause in a race, previous screen in menus). On
+  // the title screen a second back press does leave.
+  _trapBack() {
+    if (params.get('demo')) return;
+    let armed = false;
+    const arm = () => { if (armed) return; armed = true; try { history.pushState({ sor: 1 }, ''); } catch (e) { armed = false; } };
+    window.addEventListener('pointerup', arm);
+    window.addEventListener('keydown', arm);
+    window.addEventListener('popstate', () => {
+      armed = false;
+      if ((this.state === 'race' || this.state === 'intro') && !this.paused) this.pause();
+      else if (this.state === 'title') this.ui.toast('Pulsa ATRÁS otra vez para salir', 'small', 1600);
+      else this.input._ui('back', 'keys');
+    });
+  }
+
   // The phone can take the graphics memory back (memory pressure, a long time in the
   // background): pause, wait for WebGL to come back, rebuild what lived only on the
   // GPU (sky lighting, tyre marks), and offer a reload if it never returns.
@@ -412,6 +467,10 @@ export class Game {
     cv.addEventListener('webglcontextrestored', () => {
       clearTimeout(timer);
       try {
+        // the old environment map and the PMREM generator's buffers died with the lost
+        // context: drop them (deleting them now would touch a dead context) and rebuild
+        this.view.envRT = null;
+        this.view.pmrem = new THREE.PMREMGenerator(this.view.renderer);
         this.view.setTime(this.world.timeName || 'day');           // PMREM environment
         if (this.world.terrain) this.world.terrain.userData.marks.clear(); // tyre-mark target
         // the baked ground noise was GPU-only: compute it live until the next circuit
@@ -459,7 +518,7 @@ export class Game {
       this.state = 'race';
       this.introT = null;
       this._raceCamera(false);
-      this.audio.announce('ready');
+      this.audio.announce(this.trial ? 'time_trial' : 'ready');
     }
   }
 
@@ -471,6 +530,7 @@ export class Game {
       return;
     }
     this.state = 'post';
+    if (this.trial) return this._trialDone();
     const summary = this.session.applyResults(this.race);
     this.lastSummary = summary;
     this.stateTick = this._delay(2.2, () => this.showResults(summary));
@@ -479,6 +539,61 @@ export class Game {
     this.audio.announce(winner.human ? 'winner' : 'race_over');
     // fireworks over the stadium
     this.fireworksT = 4;
+  }
+
+  // ------------------------------------------------------------------ time trial
+  _trialDone() {
+    const T = this.trial, me = T.me, prev = T.rec;
+    const done = me.finished && !me.dnf;
+    let saved = false;
+    if (done) {
+      saved = saveGhost(T.key, { t: me.finishTime, laps: T.laps || [], v: me.entry.vehicle || 'truck', c: me.entry.truckId, at: Date.now(), s: T.recorder.s });
+    }
+    this.world.setCamera('tv', { index: me.i });
+    this.audio.announce(saved && prev ? 'new_record' : 'race_over');
+    if (saved) this.fireworksT = 4;
+    this.stateTick = this._delay(2.2, () => this._trialResults(done, saved, prev));
+  }
+
+  _trialResults(done, saved, prev) {
+    this.hud.destroy();
+    this.touch.show(false);
+    this.state = 'results';
+    const T = this.trial, me = T.me, def = trackById(this.session.free.id);
+    const laps = T.laps || [];
+    const best = laps.length ? Math.min(...laps) : 0;
+    const recLaps = prev && prev.laps ? prev.laps : [];
+    let cum = 0, recCum = 0;
+    const rows = laps.map((t, i) => {
+      cum += t; recCum += recLaps[i] || 0;
+      const d = recLaps[i] != null ? cum - recCum : null; // ahead/behind the record at that point
+      return `<div class="place">${i + 1}</div><div class="${t === best ? 'fast' : ''}">${fmtTime(t)}</div>
+        <div class="${d == null || Math.abs(d) < 0.005 ? 'muted' : d < 0 ? 'ok' : 'bad'}">${d == null ? '—' : Math.abs(d) < 0.005 ? '±0.00' : (d < 0 ? '−' : '+') + Math.abs(d).toFixed(2)}</div>`;
+    }).join('');
+    const verdict = !done ? '<div class="bad"><span class="big">Sin tiempo</span></div>'
+      : saved && prev ? `<div class="ok"><span class="big">¡Nuevo récord!</span><br>${fmtTime(me.finishTime)} · ${(prev.t - me.finishTime).toFixed(2)} s mejor que tu fantasma</div>`
+      : saved ? `<div class="ok"><span class="big">${fmtTime(me.finishTime)}</span><br>Primer tiempo: desde ahora correrás contra este fantasma</div>`
+      : Math.abs(me.finishTime - prev.t) < 0.005 ? `<div><span class="big">${fmtTime(me.finishTime)}</span><br>¡Empate exacto con tu récord!</div>`
+      : `<div><span class="big">${fmtTime(me.finishTime)}</span><br><span class="bad">+${(me.finishTime - prev.t).toFixed(2)} s</span> sobre tu récord (${fmtTime(prev.t)})</div>`;
+    const el = this.ui.show('results', `
+      <div class="panel fade-in" style="max-width:96vw">
+        <div class="head">CONTRARRELOJ · ${esc(def.name).toUpperCase()}${this.session.free.reverse ? ' (INVERSO)' : ''}</div>
+        <div class="table trial" style="padding:4px 18px 8px">
+          <div class="hd">VUELTA</div><div class="hd">TIEMPO</div><div class="hd">VS. RÉCORD</div>
+          ${rows}
+        </div>
+        <div class="verdict">${verdict}</div>
+        <div class="menu" style="padding-top:0"><div class="btn primary" data-a="again">OTRA VEZ</div><div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div></div>
+      </div>`);
+    this.audio.music('results');
+    this.ui.navigate('results', [...el.querySelectorAll('.btn')], {
+      onOk: (i, b) => this._fade(() => {
+        this.ui.hide('results');
+        if (b.dataset.a === 'again') this.nextRace();
+        else if (b.dataset.a === 'other') { this.toTitleQuiet(); this.toFreeRace(); }
+        else this.toTitle();
+      }),
+    });
   }
 
   // Scene changes go through black (menus <-> race <-> garage) instead of cutting,
@@ -620,6 +735,7 @@ export class Game {
           <div class="btn" data-a="opts">OPCIONES</div>
           <div class="btn" data-a="scores">RÉCORDS</div>
           <div class="btn" data-a="help">CÓMO SE JUEGA</div>
+          ${this.installPrompt ? '<div class="btn gold-btn" data-a="install">INSTALAR JUEGO</div>' : ''}
         </div>
         <div class="hint-keys">${isTouch() ? '' : '↑↓ ELEGIR · ENTER ACEPTAR · ESC VOLVER'}</div>
       </div>`);
@@ -643,6 +759,13 @@ export class Game {
         else if (a === 'opts') this.toOptions(() => this.toMenu());
         else if (a === 'scores') this.toScores(() => this.toMenu());
         else if (a === 'help') this.toHelp(() => this.toMenu());
+        else if (a === 'install' && this.installPrompt) {
+          // the browser's own "install app" dialog (then it opens like an app, full screen)
+          const p = this.installPrompt;
+          this.installPrompt = null;
+          p.prompt();
+          p.userChoice.then((c) => { if (c && c.outcome === 'accepted') this.ui.toast('¡Instalado! Ábrelo desde su icono', 'money', 2600); }).catch(() => {}).finally(() => { if (this.state === 'menu') this.toMenu(); });
+        }
       },
       onLeft: (i, b) => { if (b.dataset.a === 'diff') cycle(-1); if (b.dataset.a === 'pack') cyclePack(-1); },
       onRight: (i, b) => { if (b.dataset.a === 'diff') cycle(1); if (b.dataset.a === 'pack') cyclePack(1); },
@@ -737,21 +860,27 @@ export class Game {
   // ------------------------------------------------------------------ free race
   toFreeRace() {
     this.state = 'free';
-    const sel = this.freeSetup || { id: 'fandango', reverse: false, time: 'auto' };
+    const sel = this.freeSetup || { id: 'fandango', reverse: false, time: 'auto', trial: false };
     this.freeSetup = sel;
     const times = ['auto', 'day', 'sunset', 'night'], timeName = { auto: 'DEL CIRCUITO', day: 'DÍA', sunset: 'ATARDECER', night: 'NOCHE' };
     const thumbs = this._thumbs || (this._thumbs = Object.fromEntries(TRACKS.map((d) => [d.id, trackThumb(d)])));
     const render = (focusId) => {
-      const recs = loadLaps();
+      // cards show the best lap (race) or the best run with its ghost (time trial)
+      const recs = loadLaps(), runs = ghostTimes();
+      const rec = (d) => {
+        if (sel.trial) { const t = runs[ghostKey(d.id, sel.reverse)]; return t ? 'RÉCORD ' + fmtTime(t) : '&nbsp;'; }
+        const r = recs[lapKey(d.id, sel.reverse)]; return r ? 'MEJOR ' + fmtTime(r.t) : '&nbsp;';
+      };
       const el = this.ui.show('free', `
         <div class="panel fade-in" style="max-width:min(1100px,98vw);max-height:100%;overflow:auto">
-          <div class="head">CARRERA LIBRE <span class="gold" style="font-size:.72em">· ${esc(trackById(sel.id).name)}</span></div>
+          <div class="head">${sel.trial ? 'CONTRARRELOJ' : 'CARRERA LIBRE'} <span class="gold" style="font-size:.72em">· ${esc(trackById(sel.id).name)}</span></div>
           <div class="tracks">${TRACKS.map((d) => `
             <div class="tcard ${d.id === sel.id ? 'sel' : ''}" data-id="${d.id}">
               <img src="${thumbs[d.id]}" alt=""><div class="tn">${esc(d.name)}</div><div class="tp">${d.pak ? 'TRACK PAK' : 'ORIGINAL'}</div>
-              <div class="trec">${recs[lapKey(d.id, sel.reverse)] ? 'MEJOR ' + fmtTime(recs[lapKey(d.id, sel.reverse)].t) : '&nbsp;'}</div>
+              <div class="trec">${rec(d)}</div>
             </div>`).join('')}</div>
           <div class="menu" style="flex-direction:row;flex-wrap:wrap;justify-content:center;padding-top:4px">
+            <div class="btn" data-a="mode" data-opt>MODO <span class="val">${sel.trial ? 'CONTRARRELOJ' : 'CARRERA'}</span></div>
             <div class="btn" data-a="dir" data-opt>SENTIDO <span class="val">${sel.reverse ? 'INVERSO' : 'NORMAL'}</span></div>
             <div class="btn" data-a="time" data-opt>LUZ <span class="val">${timeName[sel.time]}</span></div>
             <div class="btn primary" data-a="go">ELEGIR VEHÍCULO</div>
@@ -765,15 +894,20 @@ export class Game {
         start, grid: cols,
         onOk: (i, e) => {
           if (e.dataset.id) { sel.id = e.dataset.id; render(sel.id); return; }
-          if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); }
+          if (e.dataset.a === 'mode') { sel.trial = !sel.trial; render('mode'); }
+          else if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); }
           else if (e.dataset.a === 'time') { sel.time = times[(times.indexOf(sel.time) + 1) % times.length]; render('time'); }
           else if (e.dataset.a === 'go') { this.ui.hide('free'); this.toSelect(1, this.opt.difficulty || 'normal'); }
         },
-        onRight: (i, e) => { if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); } else if (e.dataset.a === 'time') { sel.time = times[(times.indexOf(sel.time) + 1) % times.length]; render('time'); } },
+        onRight: (i, e) => {
+          if (e.dataset.a === 'mode') { sel.trial = !sel.trial; render('mode'); }
+          else if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); }
+          else if (e.dataset.a === 'time') { sel.time = times[(times.indexOf(sel.time) + 1) % times.length]; render('time'); }
+        },
         onBack: () => { this.ui.hide('free'); this.freeSetup = null; this.toMenu(); },
       });
       // restore focus on option buttons after a re-render
-      if (focusId === 'dir' || focusId === 'time') { const k = all.findIndex((e) => e.dataset.a === focusId); if (k >= 0) this.ui.nav.focus(k, true); }
+      if (focusId === 'dir' || focusId === 'time' || focusId === 'mode') { const k = all.findIndex((e) => e.dataset.a === focusId); if (k >= 0) this.ui.nav.focus(k, true); }
     };
     render();
   }
@@ -784,7 +918,7 @@ export class Game {
       this.ui.hideAll();
       this.attract = false;
       this.attractTick = null;
-      this.session = new Session([{ truckId: pick.truckId, vehicle: pick.vehicle }], this.opt.difficulty || 'normal', 'all', { id: f.id, reverse: f.reverse, time: f.time === 'auto' ? null : f.time });
+      this.session = new Session([{ truckId: pick.truckId, vehicle: pick.vehicle }], this.opt.difficulty || 'normal', 'all', { id: f.id, reverse: f.reverse, time: f.time === 'auto' ? null : f.time, trial: !!f.trial });
       const p = this.session.players[0];
       p.upgrades = { tires: 2, shocks: 2, accel: 2, speed: 2 };
       this.session.raceNo = 6; // a mid-season field
@@ -953,21 +1087,25 @@ export class Game {
     this.ui.hide('pause');
     const o = this.opt;
     const defs = [
-      { k: 'quality', name: 'CALIDAD GRÁFICA', vals: ['auto', 'low', 'medium', 'high'], lab: { auto: 'AUTO', low: 'BAJA', medium: 'MEDIA', high: 'ALTA' } },
+      { k: 'quality', name: 'CALIDAD GRÁFICA', short: 'CALIDAD', vals: ['auto', 'low', 'medium', 'high'], lab: { auto: 'AUTO', low: 'BAJA', medium: 'MEDIA', high: 'ALTA' } },
       { k: 'camera', name: 'CÁMARA', vals: ['classic', 'zoom', 'follow'], lab: { classic: 'CLÁSICA', zoom: 'DINÁMICA', follow: 'PERSECUCIÓN' } },
       { k: 'music', name: 'MÚSICA', vals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
       { k: 'sfx', name: 'EFECTOS', vals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
       { k: 'voice', name: 'LOCUTOR', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'haptics', name: 'VIBRACIÓN', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } },
-      ...(canFullscreen() ? [{ k: 'fullscreen', name: 'PANTALLA COMPLETA', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } }] : []),
-      { k: 'touch', name: 'CONTROL TÁCTIL', vals: ['buttons', 'stick'], lab: { buttons: 'BOTONES', stick: 'JOYSTICK' } },
-      { k: 'autoGas', name: 'ACELERADOR AUTOMÁTICO', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
-      { k: 'fps', name: 'MOSTRAR FPS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
+      ...(canFullscreen() ? [{ k: 'fullscreen', name: 'PANTALLA COMPLETA', short: 'P. COMPLETA', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } }] : []),
+      { k: 'touch', name: 'CONTROL TÁCTIL', short: 'TÁCTIL', vals: ['buttons', 'stick'], lab: { buttons: 'BOTONES', stick: 'JOYSTICK' } },
+      ...(isTouch() ? [
+        { k: 'touchSide', name: 'MANDOS', vals: ['right', 'left'], lab: { right: 'DIESTRO', left: 'ZURDO' } },
+        { k: 'touchSize', name: 'TAMAÑO BOTONES', short: 'BOTONES', vals: ['s', 'm', 'l'], lab: { s: 'PEQUEÑO', m: 'NORMAL', l: 'GRANDE' } },
+      ] : []),
+      { k: 'autoGas', name: 'ACELERADOR AUTOMÁTICO', short: 'AUTO-GAS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
+      { k: 'fps', name: 'MOSTRAR FPS', short: 'FPS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
     ];
     const qBefore = o.quality;
     const el = this.ui.show('options', `
       <div class="panel fade-in"><div class="head">OPCIONES</div><div class="menu cols2">
-        ${defs.map((d) => `<div class="btn" data-k="${d.k}" data-opt>${d.name} <span class="val"></span></div>`).join('')}
+        ${defs.map((d) => `<div class="btn" data-k="${d.k}" data-opt><span class="ln">${d.name}</span><span class="sn">${d.short || d.name}</span> <span class="val"></span></div>`).join('')}
         <div class="btn primary" data-k="back">VOLVER</div>
       </div><div class="hint-keys">${isTouch() ? 'Toca una opción para cambiarla' : '← → CAMBIAR'}</div></div>`);
     const paint = () => {
@@ -987,6 +1125,7 @@ export class Game {
       this.saveOpt();
       this.audio.setVolumes(o);
       this.touch.setMode(o.touch);
+      this.touch.layout();
       if (d.k === 'camera' && this.race && this.state === 'race') this._raceCamera(false);
       if (d.k === 'fullscreen') { if (o.fullscreen) enterFullscreen(true); else exitFullscreen(); }
     };
@@ -1016,6 +1155,7 @@ export class Game {
         <p>Recoge <b style="color:#79c2ff">nitros</b> y <b class="gold">bolsas de dinero</b> en la pista. Con el dinero mejora tu camión en el taller: neumáticos, amortiguadores, aceleración y velocidad punta (5 niveles cada uno), o compra más nitro.</p>
         <p>Puedes correr con el <b>camión</b> (más agarre y velocidad punta, gana los empujones) o con el <b>buggy</b> del <i>Track Pak</i> (acelera más y aterriza mejor los saltos, pero es ligero y derrapa más).</p>
         <p>Hay 16 circuitos (los 8 de la recreativa y los 8 del <i>Track Pak</i>), cada uno en los dos sentidos. En <b>CARRERA LIBRE</b> puedes probar cualquiera, con el sentido y la luz que quieras.</p>
+        <p>En <b>CONTRARRELOJ</b> (Carrera libre → Modo) corres solo contra el <b>fantasma</b> de tu mejor tiempo en cada circuito. Pellizca la pista para acercar o alejar la cámara.</p>
         <p class="credits"><b>Créditos.</b> Remake de aficionado de <i>Ivan "Ironman" Stewart's Super Off Road</i> © 1989 Leland Corporation.
         Música: «Hotrock», «Exhilarate», «Cool Rock», «Ready Aim Fire», «Neolith» y «Twisted» de Kevin MacLeod (incompetech.com), licencia Creative Commons Atribución 4.0.
         Texturas de tierra: Poly Haven (CC0). Fuentes Russo One y Teko (SIL OFL). Locutor: Piper (voz en_US-ryan). Motor 3D: Three.js (MIT). Modelos 3D hechos con Blender.</p>

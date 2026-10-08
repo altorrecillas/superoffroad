@@ -74,17 +74,25 @@ export class Touch {
     // keep clear of the notch, the rounded corners and the home bar
     const si = safeInsets();
     const W = innerWidth - si.left - si.right, H = innerHeight - si.bottom;
-    const s = Math.max(64, Math.min(110, Math.min(W, H) * 0.2));
+    // button size option (CONTROLES: PEQUEÑOS / NORMALES / GRANDES)
+    const k = { s: 0.84, m: 1, l: 1.18 }[this.opt.touchSize] || 1;
+    const s = Math.max(56, Math.min(128, Math.min(W, H) * 0.2 * k));
     const pad = Math.max(14, s * 0.18);
-    const place = (el, x, y, size) => { if (!el) return; Object.assign(el.style, { width: size + 'px', height: size + 'px', left: (x + si.left) + 'px', top: y + 'px' }); };
+    // left-handed: steering on the right, gas and nitro on the left
+    const mirror = this.opt.touchSide === 'left';
+    const place = (el, x, y, size) => {
+      if (!el) return;
+      Object.assign(el.style, { width: size + 'px', height: size + 'px', left: ((mirror ? W - x - size : x) + si.left) + 'px', top: y + 'px' });
+    };
     if (this.mode === 'stick') {
       const ss = s * 1.7;
       place(this.els.stick, pad + 10, H - ss - pad, ss);
       place(this.els.nitro, W - s * 1.15 - pad, H - s * 1.15 - pad, s * 1.15);
       place(this.els.brake, W - s * 2.2 - pad * 1.5, H - s * 0.9 - pad, s * 0.9);
     } else {
-      place(this.els.left, pad, H - s - pad, s);
-      place(this.els.right, pad + s + pad * 0.8, H - s - pad, s);
+      // mirrored, the pair keeps ◀ on the left of ▶
+      place(mirror ? this.els.right : this.els.left, pad, H - s - pad, s);
+      place(mirror ? this.els.left : this.els.right, pad + s + pad * 0.8, H - s - pad, s);
       place(this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
       place(this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
     }

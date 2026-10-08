@@ -31,7 +31,7 @@ export class Session {
   constructor(players, difficulty = 'normal', tracks = 'all', free = null) {
     this.difficulty = difficulty;
     this.rotation = SEASONS[tracks] || SEASONS.all;
-    this.free = free; // single race: { id, reverse, time }
+    this.free = free; // single race: { id, reverse, time, trial }
     this.diff = DIFFICULTY[difficulty] || DIFFICULTY.normal;
     this.raceNo = 0;
     this.players = players.map((p, i) => ({
@@ -108,6 +108,7 @@ export class Session {
         ai: { skill: 0.5, aggression: 0 },
       });
     }
+    if (this.free && this.free.trial) { out.forEach((e, i) => (e.slot = i)); return out; } // time trial: alone on the track
     for (const def of TRUCKS) {
       if (used.has(def.id)) continue;
       const s = this.cpuSetup(def);

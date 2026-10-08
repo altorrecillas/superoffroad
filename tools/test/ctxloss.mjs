@@ -15,7 +15,10 @@ const engine = ENG === 'webkit' ? webkit : chromium;
 const browser = await engine.launch(ENG === 'webkit' ? {} : { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const page = await (await browser.newContext({ viewport: { width: 800, height: 360 }, hasTouch: true })).newPage();
 const errors = [];
-page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404') && !/context lost|CONTEXT_LOST/i.test(m.text())) errors.push(m.text()); });
+// WebGL itself may log about objects of the dead context being released (resizes while
+// the context is lost); that is expected in this scenario, any other error is not
+const EXPECTED = /context lost|CONTEXT_LOST|does not belong to this context/i;
+page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404') && !EXPECTED.test(m.text())) errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push('PAGEERROR ' + e.message));
 let ok = true;
 const check = (cond, what) => { console.log((cond ? '  ok   ' : '  FAIL ') + what); if (!cond) ok = false; };

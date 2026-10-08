@@ -9,7 +9,8 @@ const BUGGY_REV = 1.3;
 const GEARS = [7.5, 12.5, 18, 24.5, 33];
 const VOICES = ['welcome', 'ready', 'go', 'final_lap', 'winner', 'ironman_wins', 'race_over', 'game_over', 'new_record', 'continue',
   'track_fandango', 'track_huevos', 'track_sidewinder', 'track_bigdukes', 'track_blaster', 'track_hurricane', 'track_cliffhanger', 'track_wipeout',
-  'track_redoubt', 'track_riotrio', 'track_leapin', 'track_cutoff', 'track_boulder', 'track_pigbog', 'track_shortcut', 'track_volcano'];
+  'track_redoubt', 'track_riotrio', 'track_leapin', 'track_cutoff', 'track_boulder', 'track_pigbog', 'track_shortcut', 'track_volcano',
+  'lead', 'ironman_lead', 'big_air', 'wrong_way', 'lap_record', 'time_trial'];
 const MUSIC = { title: ['title'], race: ['race1', 'race2', 'race3', 'race4'], shop: ['shop'], results: ['shop'] };
 const _v = new THREE.Vector3();
 
@@ -119,16 +120,26 @@ export class Audio {
     s.start(0);
   }
   ui(kind) { this.sfx(kind, { vol: 0.35, vary: 0 }); }
-  announce(key) {
+  // race calls are 'minor': they never cut another call short and the same one is not
+  // repeated within a few seconds; the rest (track name, go, results) always play
+  announce(key, minor = false) {
     if (!this.ready || this.opt.voice === false) return;
     const b = this.buffers['v_' + key];
     if (!b || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    if (minor) {
+      if (this.voiceEnd && now < this.voiceEnd) return;
+      this._said = this._said || {};
+      if (this._said[key] && now - this._said[key] < 9) return;
+      this._said[key] = now;
+    }
     if (this.voiceSrc) try { this.voiceSrc.stop(); } catch (e) { /* */ }
     const s = this.ctx.createBufferSource();
     s.buffer = b;
     s.connect(this.voiceBus);
-    s.start(this.ctx.currentTime + 0.05);
+    s.start(now + 0.05);
     this.voiceSrc = s;
+    this.voiceEnd = now + 0.05 + b.duration;
   }
 
   // ------------------------------------------------------------------ music

@@ -1,7 +1,7 @@
 {
   "name": "Super Off Road · Remastered",
   "short_name": "Super Off Road",
-  "description": "Remake en 3D del arcade Super Off Road (1989).",
+  "description": "Remake en 3D del arcade Super Off Road (1989): 16 circuitos, camión o buggy, contrarreloj con fantasma y hasta 3 jugadores.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "fullscreen",
@@ -10,7 +10,53 @@
   "theme_color": "#120a05",
   "lang": "es",
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "id": "./",
+  "display_override": [
+    "fullscreen",
+    "standalone"
+  ],
+  "categories": [
+    "games"
+  ],
+  "screenshots": [
+    {
+      "src": "docs/screenshot-wide.jpg",
+      "sizes": "1280x720",
+      "type": "image/jpeg",
+      "form_factor": "wide",
+      "label": "Carrera en Fandango"
+    },
+    {
+      "src": "docs/screenshot-wide-2.jpg",
+      "sizes": "1280x720",
+      "type": "image/jpeg",
+      "form_factor": "wide",
+      "label": "Camión o buggy"
+    }
   ]
 }

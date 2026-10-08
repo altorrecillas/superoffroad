@@ -20,6 +20,20 @@ python3 tools/serve.py          # http://localhost:8080/  (y muestra la direcci�
 
 No hace falta instalar ni compilar nada: Three.js va incluido en `vendor/three/` y funciona sin conexión. `tools/serve.py` desactiva la caché y admite rangos HTTP (lo necesita Safari del iPhone para la música).
 
+### Instalarlo como una aplicación
+
+Publicado en una web con https (por ejemplo GitHub Pages), el juego **se instala como una app**: en Chrome para Android sale el botón **INSTALAR JUEGO** en el menú (o «Instalar aplicación» en el menú del navegador) y se abre a pantalla completa desde su icono. Después de abrirlo una vez **funciona sin conexión**: un *service worker* guarda los ficheros que usa (la música, la primera vez que suena). Con conexión siempre carga la versión más nueva. En el iPhone: *Compartir → Añadir a pantalla de inicio*.
+
+El botón **atrás** de Android no te saca del juego: en carrera lo pone en pausa y en los menús vuelve a la pantalla anterior (en la pantalla de título, pulsándolo dos veces sí se sale).
+
+### Subirlo a GitHub y jugar desde cualquier sitio
+
+```bash
+bash subir_a_github.sh
+```
+
+El script pregunta a qué repositorio subirlo (o crea uno nuevo, `super-off-road-remastered`), hace el commit con tu nombre y tu email, lo sube y ofrece publicarlo con **GitHub Pages**: el juego queda en `https://TU-USUARIO.github.io/super-off-road-remastered/`, listo para abrir en el móvil (en el iPhone, *Compartir → Añadir a pantalla de inicio* para jugar a pantalla completa). Todas las rutas del juego son relativas, así que funciona tal cual dentro de esa carpeta de GitHub Pages.
+
 ### Controles
 
 | Acción | Teclado (1 jugador) | Mando | Táctil |
@@ -34,6 +48,8 @@ No hace falta instalar ni compilar nada: Three.js va incluido en `vendor/three/`
 El giro es **rotacional**, como el volante del arcade: izquierda y derecha hacen girar el camión sobre sí mismo, mire hacia donde mire. En el móvil, la opción **Joystick** cambia a «apunta y acelera»: el camión va hacia donde empujas.
 
 **En el móvil**: se juega en horizontal y a **pantalla completa** (se activa al tocar la pantalla de título y vuelve sola si sales de ella; se puede quitar en Opciones). En el iPhone, Safari no deja poner una web a pantalla completa: hay que usar **Compartir → Añadir a pantalla de inicio**, y desde ese icono el juego se abre sin barras. Los menús se ajustan solos al espacio que haya (con o sin barras del navegador), y los marcadores de la carrera se apartan (se vuelven casi transparentes) cuando un camión pasa por debajo.
+
+En **Opciones** se puede poner el mando táctil para **zurdos** (giro a la derecha, gas y nitro a la izquierda) y elegir el **tamaño de los botones**.
 
 **Tu camión** lleva encima una etiqueta **TÚ** (1P, 2P o 3P con varios jugadores) y un aro de su color en el suelo, que en la parrilla parpadea para que te encuentres. **Pellizca la pista** con dos dedos (o usa la rueda del ratón) para acercar o alejar la cámara: alejando del todo se pasa a la vista clásica de todo el estadio, y la cámara elegida se recuerda.
 
@@ -59,6 +75,10 @@ Al elegir color se elige también el vehículo (↑ ↓ en el teclado o el mando
 - **Buggy**: acelera más y tiene mejores amortiguadores (aterriza los saltos y pasa los baches sin perder el control). Es ligero y derrapa más, y los camiones lo apartan con facilidad. Suena distinto: un bóxer refrigerado por aire en vez del V8.
 
 Con el mismo piloto los dos tardan casi lo mismo en el total de los 32 circuitos (diferencia por debajo del 0,5 %). El buggy gana en los circuitos de horquillas, agua y saltos (Huevos Grande, Rio Trio, Leapin' Lizards, Pig Bog) y el camión en los rápidos (Fandango, Redoubt About, Cutoff Pass).
+
+### Contrarreloj con fantasma
+
+En **CARRERA LIBRE → MODO: CONTRARRELOJ** corres solo, sin objetos en la pista, 3 vueltas. El juego graba tu recorrido y, la próxima vez que corras en ese circuito y sentido, un **fantasma** transparente de tu mejor tiempo corre contigo (también aparece en el minimapa). Al cerrar cada vuelta ves cuánto le sacas o te saca (en verde si vas por delante) y al final, tus vueltas, el tiempo total y si has batido el récord. Las tarjetas de los circuitos muestran tu récord en cada uno.
 
 ### El taller de Ironman
 
@@ -108,7 +128,7 @@ Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**C
 - `js/audio/`: motores sintetizados por cilindro (V8 para los camiones, bóxer de cuatro cilindros para el buggy) con cambio de marchas, derrapes, golpes, salpicaduras, nitro y ambiente de estadio, todo generado al cargar.
 - `tools/blender/truck.py` construye el camión en **Blender 5.2** por script (carrocería, jaula, amortiguadores, barra de luces, ruedas con tacos y llantas *beadlock*, más una rueda de bajo detalle para la vista lejana), hornea la oclusión ambiental y exporta `assets/models/truck.glb`. `tools/blender/buggy.py` hace lo mismo con el buggy (morro de fibra, jaula tubular con techo, motor bóxer con escape, ruedas delanteras estrechas y traseras anchas). Los modelos se exportan con compresión *meshopt* (el decodificador va en `vendor/three/addons/libs/`). `tools/blender/props.py` hace el resto del atrezo (banderillero articulado, torre de salida, bidones gigantes, balas de paja, neumáticos, columnas de roca, lagartos gigantes, botella de nitro y saco de dinero). `tools/blender/logo.py` y `icon.py` renderizan el logotipo y el icono con Cycles.
 - Robustez en el móvil: si el teléfono gira a vertical, se cambia de aplicación o el sistema recupera la memoria gráfica (pérdida del contexto WebGL), la carrera se pausa y el juego se recupera solo; la música usa un único reproductor para que el iPhone la deje cambiar de pista sin pedir otro toque.
-- `tools/test/`: pruebas sin navegador (`simrace.mjs` corre carreras de la IA en los 16 circuitos, `season.mjs` juega un campeonato entero con las reglas reales contra un jugador simulado, `fuzz.mjs` somete la física a pilotos con mandos aleatorios, `vehiclebalance.mjs` compara camión y buggy con el mismo piloto, `simviz.mjs` dibuja trayectorias y choques, `keyboarddriver.mjs` simula a un jugador con teclado), capturas (`shot.mjs`), un repaso visual de todas las pantallas a cualquier tamaño o modelo de móvil que avisa si algo no cabe o si un texto se sale de su botón (`screens.mjs`), pruebas del iPhone con el motor de Safari (`ios.mjs`: pellizco bloqueado en la página, zoom de cámara, aviso de pantalla de inicio, muesca), de girar el móvil y cambiar de aplicación (`rotate.mjs`) y de pérdida de la memoria gráfica (`ctxloss.mjs`), pruebas del flujo completo (`flow*.mjs`), un «mono» que pulsa teclas al azar por todos los menús (`monkey.mjs`) y una prueba de fugas de memoria (`leak.mjs`).
+- `tools/test/`: pruebas sin navegador (`simrace.mjs` corre carreras de la IA en los 16 circuitos, `season.mjs` juega un campeonato entero con las reglas reales contra un jugador simulado, `fuzz.mjs` somete la física a pilotos con mandos aleatorios, `vehiclebalance.mjs` compara camión y buggy con el mismo piloto, `simviz.mjs` dibuja trayectorias y choques, `keyboarddriver.mjs` simula a un jugador con teclado), capturas (`shot.mjs`), un repaso visual de todas las pantallas a cualquier tamaño o modelo de móvil que avisa si algo no cabe o si un texto se sale de su botón (`screens.mjs`), pruebas del iPhone con el motor de Safari (`ios.mjs`: pellizco bloqueado en la página, zoom de cámara, aviso de pantalla de inicio, muesca), de girar el móvil y cambiar de aplicación (`rotate.mjs`) y de pérdida de la memoria gráfica (`ctxloss.mjs`), pruebas del flujo completo (`flow*.mjs`, incluida la contrarreloj con fantasma), del modo sin conexión e instalable (`offline.mjs`), del botón atrás, el mando para zurdos y el efecto del nitro (`extras.mjs`), un «mono» que pulsa teclas al azar por todos los menús (`monkey.mjs`) y una prueba de fugas de memoria (`leak.mjs`).
 
 ## Créditos y licencias
 
@@ -116,5 +136,5 @@ Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**C
 - Música de **Kevin MacLeod** ([incompetech.com](https://incompetech.com)), licencia [Creative Commons Atribución 4.0](http://creativecommons.org/licenses/by/4.0/): «Hotrock», «Exhilarate», «Cool Rock», «Ready Aim Fire», «Neolith» y «Twisted».
 - Texturas de tierra de [Poly Haven](https://polyhaven.com) (CC0): *Red Dirt Mud 01*, *Red Laterite Soil Stones*, *Brown Mud 03*.
 - Fuentes **Russo One** y **Teko** (SIL Open Font License, en `fonts/`).
-- Voz del locutor generada con [Piper](https://github.com/rhasspy/piper) (voz *en_US-ryan-high*), con los nombres de los 16 circuitos.
+- Voz del locutor generada con [Piper](https://github.com/rhasspy/piper) (voz *en_US-ryan-high*): los nombres de los 16 circuitos y los avisos de carrera («Into the lead!», «Ironman takes the lead!», «Big air!», «Wrong way!», «Lap record!», «Time trial!»…).
 - Three.js (licencia MIT, en `vendor/three/`) y el decodificador de [meshoptimizer](https://github.com/zeux/meshoptimizer) (licencia MIT).

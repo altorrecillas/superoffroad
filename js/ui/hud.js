@@ -39,13 +39,19 @@ export class HUD {
           <div class="lbl nit">NITRO</div>${cols.map((r) => cell(r, 'nit')).join('')}
         </div>
       </div>
-      ${solo && me ? `<div class="hud-me">
+      ${solo && me && this.trial ? `<div class="hud-me trial">
+        <div class="tt" data-k="lt">0:00.00</div>
+        <div class="line" data-k="lapme">VUELTA 1/${race.laps}</div>
+        <div class="line">MEJOR <b data-k="best">—</b></div>
+        <div class="line gold">RÉCORD <b>${this.trial.rec ? fmtTime(this.trial.rec.t) : '—'}</b></div>
+        <div class="line nitro">NITRO <b data-k="nitme">10</b></div>
+      </div>` : solo && me ? `<div class="hud-me">
         <div class="pos" data-k="pos">1<sup>º</sup></div>
         <div class="line" data-k="lapme">VUELTA 1/4</div>
         <div class="line nitro">NITRO <b data-k="nitme">10</b></div>
         <div class="line money" data-k="money">$0</div>
       </div>` : ''}
-      <div class="tags"></div>`;
+      <div class="tags"></div>${solo ? '<div class="speedfx"><i></i></div>' : ''}`;
     this.el = this.ui.show('hud', html, 'passive');
     this.map = solo ? this._mapBuild(race.track) : null;
     if (this.map) this.el.appendChild(this.map.c);
@@ -86,6 +92,9 @@ export class HUD {
     }
     const me = this.me;
     if (me) {
+      // nitro: speed streaks round the edges while the boost lasts
+      const boost = me.truck.nitroT > 0 && race.state === 'race';
+      if (boost !== this.boostOn) { this.boostOn = boost; const fx = this.el.querySelector('.speedfx'); if (fx) fx.classList.toggle('on', boost); }
       // the position number pops when it changes: green gaining a place, red losing one
       const pos = me.pos || 1;
       if (this.lastPos && pos !== this.lastPos && race.state === 'race' && this.cells.pos) {
@@ -96,6 +105,10 @@ export class HUD {
       }
       this.lastPos = pos;
       this.set('pos', `${pos}<sup>${ORD[pos]}</sup>`);
+      if (this.trial) {
+        this.set('lt', fmtTime(race.state === 'race' && !me.finished ? race.time - me.lapStart : me.lastLap || 0));
+        this.set('best', me.bestLap ? fmtTime(me.bestLap) : '—');
+      }
       this.set('lapme', me.finished ? '¡META!' : `VUELTA ${Math.min(race.laps, Math.max(1, me.lap + 1))}/${race.laps}`);
       this.set('nitme', String(me.truck.nitros));
       const p = this.session ? this.session.players[me.entry.player] : null;
@@ -110,9 +123,24 @@ export class HUD {
     for (const t of this.tags) {
       const tr = t.r.truck;
       _v.set(tr.x, tr.y + 2.9, tr.z).project(camera);
-      const vis = camOK && _v.z < 1 && Math.abs(_v.x) < 1.1 && Math.abs(_v.y) < 1.1;
-      if (vis !== t.shown) { t.shown = vis; t.el.style.display = vis ? '' : 'none'; }
-      if (vis) t.el.style.transform = `translate(${((_v.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-_v.y * 0.5 + 0.5) * hgt).toFixed(1)}px) translate(-50%, -100%)`;
+      t.vis = camOK && _v.z < 1 && Math.abs(_v.x) < 1.1 && Math.abs(_v.y) < 1.1;
+      t.sx = (_v.x * 0.5 + 0.5) * w; t.sy = (-_v.y * 0.5 + 0.5) * hgt;
+      if (t.vis && !t.w) { t.w = t.el.offsetWidth || 44; t.h = t.el.offsetHeight || 30; }
+    }
+    // trucks side by side (two players on the grid): spread the tags so each one
+    // stays over its own truck instead of piling up
+    for (let a = 0; a < this.tags.length; a++) for (let b = a + 1; b < this.tags.length; b++) {
+      const A = this.tags[a], B = this.tags[b];
+      if (!A.vis || !B.vis) continue;
+      const need = (A.w + B.w) / 2 + 3;
+      if (Math.abs(A.sx - B.sx) < need && Math.abs(A.sy - B.sy) < (A.h + B.h) / 2) {
+        const mid = (A.sx + B.sx) / 2, [L, R] = A.sx <= B.sx ? [A, B] : [B, A];
+        L.sx = mid - need / 2; R.sx = mid + need / 2;
+      }
+    }
+    for (const t of this.tags) {
+      if (t.vis !== t.shown) { t.shown = t.vis; t.el.style.display = t.vis ? '' : 'none'; }
+      if (t.vis) t.el.style.transform = `translate(${t.sx.toFixed(1)}px, ${t.sy.toFixed(1)}px) translate(-50%, -100%)`;
       // it pulses on the grid so you find your truck, then settles down
       if (t.start !== starting) { t.start = starting; t.el.classList.toggle('start', starting); }
     }
@@ -120,7 +148,7 @@ export class HUD {
     if (this.map) {
       const show = world.camMode === 'zoom' || world.camMode === 'follow';
       if (show !== this.map.on) { this.map.on = show; this.map.c.style.display = show ? '' : 'none'; }
-      if (show) this._mapDraw(race);
+      if (show) this._mapDraw(race, world.ghostState);
     }
     // closing time after the winner crosses the line
     const tl = race.timeLeft;
@@ -146,7 +174,12 @@ export class HUD {
       if (ev[0] === 'lap' && r.human) {
         // the lap just done, and whether it was the best of the race so far
         const lt = ev[3], best = lt && ev[2] >= 2 && Math.abs(lt - r.bestLap) < 1e-6;
-        const tm = lt ? ` <span class="lt${best ? ' best' : ''}">${fmtTime(lt)}</span>` : '';
+        let tm = lt ? ` <span class="lt${best ? ' best' : ''}">${fmtTime(lt)}</span>` : '';
+        const rl = this.trial && this.trial.rec && this.trial.rec.laps;
+        if (rl && rl.length >= ev[2]) { // time trial: ahead of or behind the ghost
+          const d = race.time - rl.slice(0, ev[2]).reduce((a, b) => a + b, 0);
+          tm += Math.abs(d) < 0.005 ? ' <span class="lt">±0.00</span>' : ` <span class="lt ${d < 0 ? 'best' : 'worse'}">${d < 0 ? '−' : '+'}${Math.abs(d).toFixed(2)}</span>`;
+        }
         if (ev[2] === race.laps - 1) this.ui.toast(`${who}¡Última vuelta!${tm}`, 'warn', 1900);
         else this.ui.toast(`${who}Vuelta ${ev[2] + 1}${tm}`, 'small', 1700);
       } else if (ev[0] === 'pickup' && r.human) {
@@ -250,10 +283,17 @@ export class HUD {
     return { c, ctx: c.getContext('2d'), base, dpr, k, on: false };
   }
 
-  _mapDraw(race) {
+  _mapDraw(race, ghost) {
     const m = this.map, g = m.ctx, k = m.k, dpr = m.dpr;
     g.clearRect(0, 0, m.c.width, m.c.height);
     g.drawImage(m.base, 0, 0);
+    if (ghost) { // time trial: where the record run is
+      const s = 5.5 * dpr;
+      g.save(); g.translate((ghost.x - ARENA.x0) * k, (ghost.z - ARENA.z0) * k); g.rotate(ghost.h);
+      g.globalAlpha = 0.7; g.fillStyle = '#cfe4ff';
+      g.beginPath(); g.moveTo(s, 0); g.lineTo(-s * 0.7, s * 0.7); g.lineTo(-s * 0.3, 0); g.lineTo(-s * 0.7, -s * 0.7); g.closePath(); g.fill();
+      g.restore();
+    }
     for (const pk of race.pickups) {
       if (pk.taken) continue;
       g.fillStyle = pk.type === 'money' ? '#ffcf3a' : '#5aa8ff';
@@ -281,6 +321,15 @@ export class HUD {
 
   // one player crossing the line: a big result banner over the track
   _finishBanner(r, place) {
+    if (this.trial) {
+      const rec = this.trial.rec, d = rec ? r.finishTime - rec.t : null;
+      const head = d == null ? 'PRIMER TIEMPO' : d < 0 ? '¡NUEVO RÉCORD!' : 'META';
+      this.ui.show('finish', `<div class="banner finish${d == null || d < 0 ? ' win' : ''}"><div class="race">${head}</div><div class="track">${fmtTime(r.finishTime)}</div>
+        <div class="sub">${d == null ? 'TU FANTASMA TE ESPERA EN LA PRÓXIMA' : (d < 0 ? '−' : '+') + Math.abs(d).toFixed(2) + ' S SOBRE EL RÉCORD'}</div></div>`, 'passive');
+      clearTimeout(this._finT);
+      this._finT = setTimeout(() => this.ui.hide('finish'), 3400);
+      return;
+    }
     const big = place === 1 ? '¡VICTORIA!' : `${place}º PUESTO`;
     this.ui.show('finish', `<div class="banner finish${place === 1 ? ' win' : ''}"><div class="race">¡META!</div><div class="track">${big}</div>
       <div class="sub">TIEMPO ${fmtTime(r.finishTime)}${r.bestLap ? ` · MEJOR VUELTA ${fmtTime(r.bestLap)}` : ''}</div></div>`, 'passive');
