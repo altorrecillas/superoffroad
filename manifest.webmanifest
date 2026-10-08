@@ -1,0 +1,16 @@
+{
+  "name": "Super Off Road · Remastered",
+  "short_name": "Super Off Road",
+  "description": "Remake en 3D del arcade Super Off Road (1989).",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#120a05",
+  "theme_color": "#120a05",
+  "lang": "es",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

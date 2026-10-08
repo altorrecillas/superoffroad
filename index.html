@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#120a05">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Remake en 3D del clásico arcade Ivan 'Ironman' Stewart's Super Off Road (1989) para el navegador.">
+  <title>Super Off Road · Remastered</title>
+  <link rel="preload" href="fonts/RussoOne.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Teko.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-64.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="ui">
+    <div class="screen" id="loading">
+      <div class="logo"><img src="assets/ui/logo.webp" alt="Super Off Road" onerror="this.outerHTML='<div class=l2>SUPER OFF ROAD</div>'"><div class="l3">REMASTERED</div></div>
+      <div class="bar"><i></i></div>
+      <div class="hint">Cargando…</div>
+    </div>
+  </div>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Super Off Road · Remastered: lo que no se sube a GitHub
+
+# dependencias, cachés y temporales
+node_modules/
+__pycache__/
+*.pyc
+*.log
+*.tmp
+
+# sistema, editores y Dropbox
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.dropbox*
+*conflicted copy*
+*Copia en conflicto*
+
+# configuración local del asistente de IA
+.claude/
+CLAUDE.md

@@ -1,0 +1,6 @@
+{
+  "name": "super-off-road-remake",
+  "private": true,
+  "type": "module",
+  "description": "Super Off Road remake (Three.js). No build step: serve the folder over HTTP."
+}
