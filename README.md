@@ -4,6 +4,8 @@ Remake fan en 3D del arcade **Ivan "Ironman" Stewart's Super Off Road** (Leland,
 
 Conserva lo que hacía divertido al original: cuatro camiones en un estadio de tierra vistos desde arriba, **4 vueltas** por carrera, saltos, baches, charcos, **nitros** y **bolsas de dinero** que aparecen en la pista, el camión gris de **Ironman** como rival a batir, los **créditos** que se pierden si la CPU te gana y el **taller** para mejorar el camión entre carreras. También trae lo que añadió el *Track Pak*: sus ocho circuitos y el **buggy** como alternativa al camión. Todo lo demás está rehecho: modelos 3D hechos con Blender, iluminación con sombras de día, al atardecer y de noche con focos, un estadio lleno de público, partículas, marcas de neumáticos que se acumulan durante la carrera, música, locutor y sonido sintetizado de los motores.
 
+Y trae lo que hoy se espera de un juego de carreras: **cuatro niveles de dificultad** con rivales que se comportan distinto en cada uno, **dirección asistida** para el móvil, y al acabar cada carrera una **repetición con cámaras de televisión** (con un realizador automático que no se pierde un salto, a cámara lenta) y un **modo foto** para guardar o compartir la mejor imagen.
+
 ![Título](docs/titulo.png)
 ![Carrera](docs/carrera.png)
 ![Camión o buggy](docs/vehiculos.jpg)
@@ -58,14 +60,50 @@ En **Opciones** se puede poner el mando táctil para **zurdos** (giro a la derec
 ### Reglas
 
 - Cada carrera son **4 vueltas**. Premios: 1º **$100.000**, 2º $90.000, 3º $80.000, 4º $70.000, más las **bolsas de dinero** recogidas ($10.000–$50.000).
-- Empiezas con **3 créditos** y **10 nitros**. Pierdes un crédito si:
-  - **Fácil**: llegas el último.
-  - **Normal**: Ironman (el camión gris) llega antes que tú.
-  - **Arcade**: cualquier camión de la CPU llega antes que tú, como en la recreativa con un jugador.
-- Sin créditos se acaba la partida (puedes **continuar** con 3 créditos más). El dinero ganado es la puntuación de la tabla de récords.
-- La CPU ajusta su ritmo según cómo vas (el *Dynamic Play Adjustment* del original) y mejora sus camiones a medida que avanza el campeonato y al compás de tus propias mejoras: Ironman siempre va un poco mejor equipado que el resto, así que no basta con comprar para ganarle. Con un piloto simulado, en 16 carreras un jugador flojo gana casi todas en Fácil, uno medio pierde unos 4 créditos en Normal y en Arcade hasta uno bueno pierde varios.
+- Empiezas con **3 créditos** y **10 nitros**. Cuándo se pierde un crédito depende de la dificultad (ver abajo). Sin créditos se acaba la partida (puedes **continuar** con 3 créditos más). El dinero ganado es la puntuación de la tabla de récords, que muestra con qué dificultad se hizo cada una.
+- La CPU ajusta su ritmo según cómo vas (el *Dynamic Play Adjustment* del original) y mejora sus camiones a medida que avanza el campeonato y al compás de tus propias mejoras: Ironman siempre va un poco mejor equipado que el resto, así que no basta con comprar para ganarle.
 - Cuando alguien cruza la meta, el resto tiene 30 segundos para terminar.
 - Tu **mejor vuelta** en cada circuito y sentido queda como récord (se avisa en carrera cuando lo bates, y aparece en los resultados y en las tarjetas de CARRERA LIBRE).
+
+### Dificultad
+
+Al elegir 1, 2 o 3 jugadores se elige la dificultad del campeonato con cuatro fichas que explican lo que cambia (en **CARRERA LIBRE** se elige con **RIVALES**):
+
+| Nivel | Los rivales | Pierdes un crédito | Premios |
+|---|---|---|---|
+| **Novato** | te esperan mucho y fallan a menudo | si llegas el último | ×0,75 |
+| **Piloto** (recomendado) | la experiencia clásica: te plantan cara y mejoran carrera a carrera | si Ironman te gana | ×1 |
+| **Experto** | afilados: casi no fallan, apenas te esperan y guardan nitro para la última vuelta | si Ironman te gana | ×1,25 |
+| **Arcade** | las reglas de la recreativa de 1989: nadie te espera | si cualquier rival te gana | ×1,5 |
+
+Cada nivel cambia de verdad cómo conducen los rivales, no solo su velocidad: cuánto levantan el pie cuando van por delante de ti y cuánto aprietan cuando van por detrás (el ajuste dinámico del original, ahora distinto en cada sentido), cuántos errores cometen (frenar tarde y abrirse en una curva, dudar con el gas), cuánto nitro reservan para la última vuelta (donde además arriesgan un poco más) y hasta dónde mejoran a lo largo del campeonato. Los premios y las bolsas se multiplican según el nivel, y la puntuación con ellos.
+
+Está calibrado con campeonatos simulados de 16 carreras contra un piloto de teclado de tres niveles de habilidad: un jugador medio gana casi todas en Novato sin perder créditos, unas 10 en Piloto perdiendo unos 4, unas 6 en Experto perdiendo unos 8 y unas 5 en Arcade perdiendo más de 10; uno bueno gana 14 en Piloto y aun así pierde varios créditos en Arcade (`tools/test/season.mjs`).
+
+Si un nivel se te queda corto (varias victorias seguidas) o grande (créditos perdidos carrera tras carrera), los resultados te sugieren cuál probar en la próxima partida.
+
+### Dirección asistida
+
+En **Opciones → DIRECCIÓN ASISTIDA** (viene en *suave* en el móvil y desactivada en el ordenador):
+
+- **Suave**: si sueltas el giro, el camión sigue la pista un poco por sí solo, y si vas a chocar contra una valla corrige el volante hacia la trazada.
+- **Fuerte**: sin tocar el giro el camión sigue la trazada, levanta el pie antes de las curvas que no pasaría y te aparta con más fuerza de las vallas.
+
+Siempre manda el jugador: si giras para alejarte de la valla, o más fuerte en la buena dirección, la ayuda no te frena. Como en los juegos de carreras actuales, ayudar tiene un precio: los premios bajan un 10 % (suave) o un 20 % (fuerte) en las carreras en las que se usa. Con un jugador simulado torpe en pantalla táctil (reacciones tardías, el pulgar que se escapa del botón), la ayuda suave reduce los choques a menos de la mitad y la fuerte casi los elimina (`tools/test/assist.mjs`).
+
+### Repetición con cámaras de televisión
+
+Al acabar cada carrera (campeonato, carrera libre o contrarreloj), **VER REPETICIÓN** vuelve a poner la carrera entera como en la tele:
+
+- Un **realizador automático** elige los planos: la parrilla de salida desde delante, cámaras en postes, helicóptero, cámaras a pie de pista, persecución y una cámara pegada al lateral del camión. Como la repetición sabe lo que va a pasar, corta a tiempo a los **saltos grandes** (que van **a cámara lenta**, con el sonido más grave), a los adelantamientos por los primeros puestos, a los choques y a la llegada a meta. Entre medias sigue sobre todo a tu camión.
+- Controles: pausa, desde el principio, ±5 segundos, velocidad (×¼, ×½, ×1, ×2, ×4), **cámara** (AUTO, TV, PERSECUCIÓN, AÉREA, LATERAL, PISTA, CLÁSICA) y **camión** (todos o uno en concreto: con AUTO, el realizador solo busca los momentos de ese camión). La **línea de tiempo** marca las vueltas, los saltos grandes y la meta, y se puede tocar o arrastrar para saltar a cualquier momento. Los controles se ocultan solos: toca la pantalla para que vuelvan.
+- Teclado: ← → y ENTER sobre los botones, ↑ ↓ camión, C cámara, V velocidad, F foto, R desde el principio, P pausa, ESC salir.
+
+No es un vídeo: el juego guarda lo que pulsaste en cada instante (unos 30 KB por minuto) y vuelve a simular la carrera, que sale idéntica hasta el último decimal porque la simulación es determinista.
+
+### Modo foto
+
+En la repetición, el botón de la cámara de fotos congela la imagen: arrastra para girar alrededor del camión, pellizca (o la rueda del ratón) para acercar, elige el camión, el **objetivo** (gran angular, normal o tele) y un **filtro** (natural, blanco y negro, antigua o viva). **HACER FOTO** la guarda firmada con el logo, el circuito y la fecha; en el móvil se puede **compartir** directamente (WhatsApp, galería…) y en el ordenador se descarga como JPEG.
 
 ### Camión o buggy
 
@@ -119,7 +157,7 @@ Los **ocho circuitos de la recreativa** y los **ocho del *Track Pak*** (la ampli
 
 ### Opciones
 
-Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**Clásica** como el arcade, **Dinámica** —misma vista pero más cerca, la que viene en el móvil— y **Persecución**; con estas dos aparece un minimapa del circuito), volumen de música y efectos, locutor, vibración (en el mando y en los móviles Android: golpes, aterrizajes duros y nitro), control táctil, acelerador automático y contador de FPS. Las opciones, los récords de puntuación y los de vuelta se guardan en el navegador.
+Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**Clásica** como el arcade, **Dinámica** —misma vista pero más cerca, la que viene en el móvil— y **Persecución**; con estas dos aparece un minimapa del circuito), volumen de música y efectos, locutor, vibración (en el mando y en los móviles Android: golpes, aterrizajes duros y nitro), control táctil, **dirección asistida**, acelerador automático y contador de FPS. Las opciones, los récords de puntuación y los de vuelta se guardan en el navegador.
 
 ## Cómo está hecho
 
@@ -127,8 +165,9 @@ Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**C
 - `js/render/`: terreno con texturas fotográficas y capa dinámica de rodadas, barreras extruidas a lo largo de los contornos, estadio con gradas de dos anillos, público animado (miles de sprites), torres de luz y videomarcador con imagen en directo, agua, atrezo, partículas y cámaras.
 - `js/audio/`: motores sintetizados por cilindro (V8 para los camiones, bóxer de cuatro cilindros para el buggy) con cambio de marchas, derrapes, golpes, salpicaduras, nitro y ambiente de estadio, todo generado al cargar.
 - `tools/blender/truck.py` construye el camión en **Blender 5.2** por script (carrocería, jaula, amortiguadores, barra de luces, ruedas con tacos y llantas *beadlock*, más una rueda de bajo detalle para la vista lejana), hornea la oclusión ambiental y exporta `assets/models/truck.glb`. `tools/blender/buggy.py` hace lo mismo con el buggy (morro de fibra, jaula tubular con techo, motor bóxer con escape, ruedas delanteras estrechas y traseras anchas). Los modelos se exportan con compresión *meshopt* (el decodificador va en `vendor/three/addons/libs/`). `tools/blender/props.py` hace el resto del atrezo (banderillero articulado, torre de salida, bidones gigantes, balas de paja, neumáticos, columnas de roca, lagartos gigantes, botella de nitro y saco de dinero). `tools/blender/logo.py` y `icon.py` renderizan el logotipo y el icono con Cycles.
+- Repeticiones (`js/game/replay.js`, `director.js`, `replayview.js`): la entrada de cada jugador se redondea a lo que se guarda *antes* de que la simulación la use, así que lo grabado es exactamente lo que se corrió; la repetición es una simulación nueva con la misma semilla, los mismos coches y esas entradas. El realizador lee las notas de la grabación (saltos con su tiempo de vuelo, adelantamientos, choques, llegadas) y programa los planos y la cámara lenta. Las cámaras de pie de pista y lateral comprueban que no haya terreno ni vallas entre ellas y el camión. La dirección asistida (`js/sim/assist.js`) es una IA que no adelanta ni esquiva, solo aconseja la trazada, mezclada con lo que pulsa el jugador.
 - Robustez en el móvil: si el teléfono gira a vertical, se cambia de aplicación o el sistema recupera la memoria gráfica (pérdida del contexto WebGL), la carrera se pausa y el juego se recupera solo; la música usa un único reproductor para que el iPhone la deje cambiar de pista sin pedir otro toque.
-- `tools/test/`: pruebas sin navegador (`simrace.mjs` corre carreras de la IA en los 16 circuitos, `season.mjs` juega un campeonato entero con las reglas reales contra un jugador simulado, `fuzz.mjs` somete la física a pilotos con mandos aleatorios, `vehiclebalance.mjs` compara camión y buggy con el mismo piloto, `simviz.mjs` dibuja trayectorias y choques, `keyboarddriver.mjs` simula a un jugador con teclado), capturas (`shot.mjs`), un repaso visual de todas las pantallas a cualquier tamaño o modelo de móvil que avisa si algo no cabe o si un texto se sale de su botón (`screens.mjs`), pruebas del iPhone con el motor de Safari (`ios.mjs`: pellizco bloqueado en la página, zoom de cámara, aviso de pantalla de inicio, muesca), de girar el móvil y cambiar de aplicación (`rotate.mjs`) y de pérdida de la memoria gráfica (`ctxloss.mjs`), pruebas del flujo completo (`flow*.mjs`, incluida la contrarreloj con fantasma), del modo sin conexión e instalable (`offline.mjs`), del botón atrás, el mando para zurdos y el efecto del nitro (`extras.mjs`), un «mono» que pulsa teclas al azar por todos los menús (`monkey.mjs`) y una prueba de fugas de memoria (`leak.mjs`).
+- `tools/test/`: pruebas sin navegador (`simrace.mjs` corre carreras de la IA en los 16 circuitos, `season.mjs` juega un campeonato entero con las reglas reales contra un jugador simulado, `fuzz.mjs` somete la física a pilotos con mandos aleatorios, `vehiclebalance.mjs` compara camión y buggy con el mismo piloto, `simviz.mjs` dibuja trayectorias y choques, `keyboarddriver.mjs` simula a un jugador con teclado, `assist.mjs` mide la dirección asistida con un jugador torpe de pantalla táctil, `replaysim.mjs` comprueba que una repetición reproduce la carrera paso a paso, bit a bit), capturas (`shot.mjs`), un repaso visual de todas las pantallas a cualquier tamaño o modelo de móvil que avisa si algo no cabe o si un texto se sale de su botón (`screens.mjs`), pruebas del iPhone con el motor de Safari (`ios.mjs`: pellizco bloqueado en la página, zoom de cámara, aviso de pantalla de inicio, muesca), de girar el móvil y cambiar de aplicación (`rotate.mjs`) y de pérdida de la memoria gráfica (`ctxloss.mjs`), pruebas del flujo completo (`flow*.mjs`, incluida la contrarreloj con fantasma y `flow_replay.mjs`: una carrera conducida con teclas reales y la asistencia puesta, su repetición a ×4 que debe acabar con los mismos tiempos, el salto atrás, el modo foto y la vuelta a los resultados, en Chrome y en el motor de Safari), del modo sin conexión e instalable (`offline.mjs`), del botón atrás, el mando para zurdos y el efecto del nitro (`extras.mjs`), un «mono» que pulsa teclas al azar por todos los menús (`monkey.mjs`) y una prueba de fugas de memoria (`leak.mjs`).
 
 ## Créditos y licencias
 

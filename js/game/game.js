@@ -12,6 +12,7 @@ import { ellipsePoly } from '../sim/util.js';
 import { Input } from '../core/input.js';
 import { Haptics } from '../core/haptics.js';
 import { UI, h, esc } from '../ui/ui.js';
+import { ICONS } from '../ui/icons.js';
 import { HUD, fmtTime } from '../ui/hud.js';
 import { Touch } from '../ui/touch.js';
 import { Audio } from '../audio/audio.js';
@@ -19,8 +20,11 @@ import { blockPageZoom, enterFullscreen, exitFullscreen, canFullscreen, needsHom
 import { TRUCKS, PLAYER_TRUCKS, truckDef } from './drivers.js';
 import { lapKey, lapRecord, submitLap, loadLaps } from './records.js';
 import { GhostRecorder, ghostKey, loadGhost, saveGhost, ghostTimes } from './ghost.js';
+import { ReplayRecorder, quantize } from './replay.js';
+import { ReplayView } from './replayview.js';
+import { SteerAssist, ASSIST_LEVELS } from '../sim/assist.js';
 import {
-  Session, UPGRADES, UPGRADE_COST, MAX_LEVEL, NITRO_COST, CREDIT_CASH, DIFFICULTY,
+  Session, UPGRADES, UPGRADE_COST, MAX_LEVEL, NITRO_COST, CREDIT_CASH, DIFFICULTY, DIFF_ORDER,
   loadScores, qualifies, addScore, fmtMoney,
 } from './session.js';
 
@@ -96,7 +100,10 @@ export class Game {
   constructor() {
     this.opt = Object.assign({
       quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', nitroPos: 'both', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
+      assist: isTouch() ? 'soft' : 'off', difficulty: 'normal',
     }, this._loadOpt());
+    if (!DIFFICULTY[this.opt.difficulty]) this.opt.difficulty = 'normal';
+    if (ASSIST_LEVELS[this.opt.assist] == null) this.opt.assist = 'off';
     this.state = 'boot';
     this.warp = +(params.get('warp') || 1);
     this.paused = false;
@@ -131,6 +138,8 @@ export class Game {
     this.touch.camera = this.view.camera;
     this.touch.onPause = () => { if (this.state === 'race' || this.state === 'intro') (this.paused ? this.resume() : this.pause()); };
     this.world = new RaceWorld(this.view);
+    this.logoImg = new Image(); // signs the replay photos
+    this.logoImg.src = 'assets/ui/logo.webp';
     // the classic view keeps the strip under the HUD board free of track
     this.world.hudInset = () => {
       const b = this.hud && this.hud.el && this.hud.el.querySelector('.hud-board');
@@ -163,10 +172,18 @@ export class Game {
     // a tap skips the intro fly-over (the keyboard and pads already can)
     document.addEventListener('pointerup', () => { if (this.state === 'intro' && !this.paused && this.introT != null && this.introT > 0.6) this.introT = this.introHold; });
     document.addEventListener('click', keepFull);
-    document.addEventListener('visibilitychange', () => { if (document.hidden && this.state === 'race' && !this.paused) this.pause(); this.audio.suspend(document.hidden); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.state === 'race' && !this.paused) this.pause();
+      if (document.hidden && this.replayView && this.replayView.playing) this.replayView.setPlaying(false);
+      this.audio.suspend(document.hidden);
+    });
     // a phone turned to portrait shows the "rotate" overlay: do not keep racing behind it
     const portrait = (this.portraitMQ = matchMedia('(orientation: portrait)'));
-    const onRotate = () => { if (portrait.matches && isTouch() && (this.state === 'race' || this.state === 'intro') && !this.paused) this.pause(); };
+    const onRotate = () => {
+      if (!portrait.matches || !isTouch()) return;
+      if ((this.state === 'race' || this.state === 'intro') && !this.paused) this.pause();
+      if (this.replayView && this.replayView.playing) this.replayView.setPlaying(false);
+    };
     if (portrait.addEventListener) portrait.addEventListener('change', onRotate); else if (portrait.addListener) portrait.addListener(onRotate);
 
     if (params.get('demo') === '1' || params.get('shot')) this._testMode();
@@ -217,10 +234,13 @@ export class Game {
     this.fpsAcc = (this.fpsAcc || 0) + dt; this.fpsN = (this.fpsN || 0) + 1;
     if (this.fpsAcc > 0.5) { this.fps = this.fpsN / this.fpsAcc; this.fpsAcc = 0; this.fpsN = 0; this._fpsShow(); }
 
-    if (this.race && !this.paused) this.stepRace(dt);
+    // a replay runs its own simulation (and its own clock: pause, slow motion)
+    const rv = this.replayView ? this.replayView.frame(dt) : null;
+    if (!rv && this.race && !this.paused) this.stepRace(dt);
     if (this.race && this.state !== 'shop') {
-      this.world.update(this.paused ? 0 : dt, this.acc / DT);
-      if (this.world.props && this.world.props.userData.update) this.world.props.userData.update(this.paused ? 0 : dt, this.race);
+      const vdt = rv ? rv.dt : this.paused ? 0 : dt;
+      this.world.update(vdt, rv ? rv.alpha : this.acc / DT);
+      if (this.world.props && this.world.props.userData.update) this.world.props.userData.update(vdt, this.race);
       if (this.world.water && this.world.water.userData.update) this.world.water.userData.update(dt, this.world.terrain.userData.fieldTex);
       if (this.state === 'race' || this.state === 'intro') this.hud.update(dt, this.view.camera, this.world, this.state === 'intro');
       if (this.state === 'race') this.hud.countdown(this.race);
@@ -254,9 +274,17 @@ export class Game {
         p0.steer = Math.max(-1, Math.min(1, d * 2.4));
       }
     }
+    // what the simulation gets: the input after the steering assist, rounded to what the
+    // replay stores (so the replay is exactly this race)
+    const q = this._stepIn || (this._stepIn = [0, 1, 2].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false })));
     while (this.acc >= DT && n < 12 * warp) {
       this.world.savePrev();
-      race.step(DT, inputs);
+      for (let p = 0; p < 3; p++) {
+        const a = this.assists && this.assists[p];
+        quantize(a && race.state === 'race' ? a.apply(DT, inputs[p]) : inputs[p], q[p]);
+      }
+      race.step(DT, q);
+      if (this.replayRec && race === this.replayRec.live) this.replayRec.step(q, race);
       if (this.trial) this.trial.recorder.step(race);
       for (const ev of race.events) this.frameEvents.push(ev);
       this.input.consumeNitro();
@@ -281,9 +309,9 @@ export class Game {
       if (!this.attract) this.haptics.handle(this.frameEvents, race);
       if (this.state === 'race') this.hud.handle(this.frameEvents);
       for (const ev of this.frameEvents) {
-        if (ev[0] === 'racedone') this.onRaceDone();
+        if (ev[0] === 'racedone' && (this.state === 'race' || this.attract)) this.onRaceDone();
         if ((ev[0] === 'lap' || ev[0] === 'finish') && ev[3] && this.state === 'race') this._lapDone(ev);
-        if (this.trial && (ev[0] === 'lap' || ev[0] === 'finish') && ev[1] === this.trial.me.i && ev[3]) (this.trial.laps = this.trial.laps || []).push(ev[3]);
+        if (this.trial && this.state === 'race' && (ev[0] === 'lap' || ev[0] === 'finish') && ev[1] === this.trial.me.i && ev[3]) (this.trial.laps = this.trial.laps || []).push(ev[3]);
         if (this.state === 'race' && !this.attract) this._callout(ev);
       }
     }
@@ -318,10 +346,26 @@ export class Game {
     // time trial: alone, no pickups, 3 laps, against the ghost of the best run
     const trial = !this.attract && !!(this.session.free && this.session.free.trial);
     const laps = opts.laps ?? (params.get('laps') ? +params.get('laps') : trial ? 3 : undefined);
-    this.race = new Race(track, entries, { seed, dpa: this.session.diff.dpa, laps, pickups: !trial });
+    const ropts = { seed, ...this.session.raceOpts(), laps, pickups: !trial };
+    this.race = new Race(track, entries, ropts);
     this.race.autopilot = params.get('autopilot') === '1';
     this.lapRecordSet = false;
     this.race.autopilotSkill = params.get('apskill') ? +params.get('apskill') : 0.95;
+    // the steering assist works on each player's input; the strongest level used in
+    // the race sets the prize (it can be changed from the pause menu)
+    this.assists = [];
+    this.assistUsed = 0;
+    this.replayRec = null;
+    if (!this.attract) {
+      const lvl = ASSIST_LEVELS[this.opt.assist] || 0;
+      for (const r of this.race.racers) if (r.human) this.assists[r.entry.player] = new SteerAssist(r.truck, track, lvl);
+      this.assistUsed = lvl;
+      // everything a replay needs: the recipe of the race and, step by step, the inputs
+      this.replayRec = new ReplayRecorder(this.race, {
+        track, entries, opts: ropts, autopilot: this.race.autopilot, autopilotSkill: this.race.autopilotSkill,
+        meta: { id, reverse, trial, free: !!this.session.free, raceNo: this.session.raceNo },
+      });
+    }
     this.world.setRace(this.race);
     this.trial = null;
     if (trial) {
@@ -531,7 +575,8 @@ export class Game {
     }
     this.state = 'post';
     if (this.trial) return this._trialDone();
-    const summary = this.session.applyResults(this.race);
+    const summary = this.session.applyResults(this.race, { assist: this.assistUsed || 0 });
+    summary.advice = this._advice(summary);
     this.lastSummary = summary;
     this.stateTick = this._delay(2.2, () => this.showResults(summary));
     const winner = this.race.finishOrder[0];
@@ -583,16 +628,17 @@ export class Game {
           ${rows}
         </div>
         <div class="verdict">${verdict}</div>
-        <div class="menu" style="padding-top:0"><div class="btn primary" data-a="again">OTRA VEZ</div><div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div></div>
+        <div class="menu row-menu" style="padding-top:0"><div class="btn primary" data-a="again">OTRA VEZ</div>${this._replayBtn()}<div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div></div>
       </div>`);
     this.audio.music('results');
+    this._resultsAgain = () => this._trialResults(done, saved, prev);
     this.ui.navigate('results', [...el.querySelectorAll('.btn')], {
-      onOk: (i, b) => this._fade(() => {
+      onOk: (i, b) => (b.dataset.a === 'replay' ? this.toReplay() : this._fade(() => {
         this.ui.hide('results');
         if (b.dataset.a === 'again') this.nextRace();
         else if (b.dataset.a === 'other') { this.toTitleQuiet(); this.toFreeRace(); }
         else this.toTitle();
-      }),
+      })),
     });
   }
 
@@ -662,15 +708,18 @@ export class Game {
     const [id, rev] = SEASON[this._attractIdx++ % SEASON.length];
     this.session.raceNo = 4 + Math.floor(Math.random() * 8);
     this.startRace(id, rev, { laps: 3 });
-    // like an arcade demo: alternate the overhead view and broadcast cameras
-    let t = 0, tv = false;
+    // like a TV broadcast behind the menus: the overhead view of the arcade between
+    // pole cameras, the helicopter, trackside and onboard shots of the front runners
+    const SHOTS = [['classic', 12], ['tv', 7], ['heli', 6], ['low', 6], ['classic', 10], ['follow', 6], ['side', 5], ['tv', 7]];
+    let t = 0, k = 0;
     this.attractCam = (dt) => {
-      if (!this.attract || !this.race) return;
+      if (!this.attract || !this.race || this.race.state === 'countdown') return;
       t += dt;
-      if (t > (tv ? 9 : 12)) {
-        t = 0; tv = !tv;
-        if (tv) this.world.setCamera('tv', { index: (Math.random() * 4) | 0 });
-        else this.world.setCamera('classic', { snap: true });
+      if (t > SHOTS[k][1]) {
+        t = 0; k = (k + 1) % SHOTS.length;
+        const mode = SHOTS[k][0], r = this.race.order[(Math.random() * 3) | 0] || this.race.racers[0];
+        if (mode === 'classic') this.world.setCamera('classic', { snap: true });
+        else this.world.setCamera(mode, { index: r.i, zoom: 0.9, side: Math.random() < 0.5 ? 1 : -1, phase: Math.random() * 6 });
       }
     };
   }
@@ -710,7 +759,9 @@ export class Game {
   }
   _scoresHTML(hiIndex = -1) {
     const s = loadScores();
-    const row = (x, i) => `<div class="r ${i === hiIndex ? 'new' : ''}">${i + 1}.</div><div class="${i === hiIndex ? 'new' : ''}">${esc(x.name)}</div><div class="${i === hiIndex ? 'new' : ''}">${fmtMoney(x.score)}</div><div class="r">C.${x.races}</div>`;
+    // the level each score was made at (the scores before the four levels have none)
+    const tag = (x) => (DIFFICULTY[x.d] ? `<span class="dtag d-${x.d}">${DIFFICULTY[x.d].tag}</span>` : '');
+    const row = (x, i) => `<div class="r ${i === hiIndex ? 'new' : ''}">${i + 1}.</div><div class="${i === hiIndex ? 'new' : ''}">${esc(x.name)}${tag(x)}</div><div class="${i === hiIndex ? 'new' : ''}">${fmtMoney(x.score)}</div><div class="r">C.${x.races}</div>`;
     // two blocks of five: side by side on landscape screens, stacked otherwise
     return `<div class="scores-wrap"><div class="scores">${s.slice(0, 5).map((x, i) => row(x, i)).join('')}</div><div class="scores">${s.slice(5).map((x, i) => row(x, i + 5)).join('')}</div></div>`;
   }
@@ -720,8 +771,6 @@ export class Game {
     this.state = 'menu';
     this.stateTick = null;
     this.ui.hide('title');
-    const diffKeys = Object.keys(DIFFICULTY);
-    let diff = this.opt.difficulty || 'normal';
     const el = this.ui.show('menu', `
       <div class="panel fade-in">
         <div class="head">SUPER OFF ROAD</div>
@@ -730,7 +779,6 @@ export class Game {
           <div class="btn" data-a="p2">2 JUGADORES</div>
           <div class="btn" data-a="p3">3 JUGADORES</div>
           <div class="btn" data-a="free">CARRERA LIBRE</div>
-          <div class="btn" data-a="diff" data-opt>DIFICULTAD <span class="val"></span></div>
           <div class="btn" data-a="pack" data-opt>CIRCUITOS <span class="val"></span></div>
           <div class="btn" data-a="opts">OPCIONES</div>
           <div class="btn" data-a="scores">RÉCORDS</div>
@@ -742,19 +790,14 @@ export class Game {
     const items = [...el.querySelectorAll('.btn')];
     const packs = ['all', 'classic', 'pak'], packName = { all: 'TODOS (16)', classic: 'ORIGINALES (8)', pak: 'TRACK PAK (8)' };
     let pack = this.opt.pack || 'all';
-    const setDiff = () => {
-      el.querySelector('[data-a=diff] .val').textContent = DIFFICULTY[diff].name.toUpperCase();
-      el.querySelector('[data-a=pack] .val').textContent = packName[pack];
-    };
-    setDiff();
-    const cycle = (d) => { diff = diffKeys[(diffKeys.indexOf(diff) + d + diffKeys.length) % diffKeys.length]; this.opt.difficulty = diff; this.saveOpt(); setDiff(); };
-    const cyclePack = (d) => { pack = packs[(packs.indexOf(pack) + d + packs.length) % packs.length]; this.opt.pack = pack; this.saveOpt(); setDiff(); };
+    const paintPack = () => { el.querySelector('[data-a=pack] .val').textContent = packName[pack]; };
+    paintPack();
+    const cyclePack = (d) => { pack = packs[(packs.indexOf(pack) + d + packs.length) % packs.length]; this.opt.pack = pack; this.saveOpt(); paintPack(); };
     this.ui.navigate('menu', items, {
       onOk: (i, b) => {
         const a = b.dataset.a;
-        if (a === 'p1' || a === 'p2' || a === 'p3') this.toSelect(+a[1], diff);
+        if (a === 'p1' || a === 'p2' || a === 'p3') this.toDifficulty(+a[1]);
         else if (a === 'free') { this.ui.hide('menu'); this.toFreeRace(); }
-        else if (a === 'diff') cycle(1);
         else if (a === 'pack') cyclePack(1);
         else if (a === 'opts') this.toOptions(() => this.toMenu());
         else if (a === 'scores') this.toScores(() => this.toMenu());
@@ -767,9 +810,48 @@ export class Game {
           p.userChoice.then((c) => { if (c && c.outcome === 'accepted') this.ui.toast('¡Instalado! Ábrelo desde su icono', 'money', 2600); }).catch(() => {}).finally(() => { if (this.state === 'menu') this.toMenu(); });
         }
       },
-      onLeft: (i, b) => { if (b.dataset.a === 'diff') cycle(-1); if (b.dataset.a === 'pack') cyclePack(-1); },
-      onRight: (i, b) => { if (b.dataset.a === 'diff') cycle(1); if (b.dataset.a === 'pack') cyclePack(1); },
+      onLeft: (i, b) => { if (b.dataset.a === 'pack') cyclePack(-1); },
+      onRight: (i, b) => { if (b.dataset.a === 'pack') cyclePack(1); },
       onBack: () => { this.ui.hide('menu'); this._showTitle(); },
+    });
+  }
+
+  // Championship difficulty, as modern racing games present it: four cards with what
+  // each level means (rivals, when a credit is lost, what it pays)
+  toDifficulty(n) {
+    this.ui.hide('menu');
+    const rule = { last: 'si llegas el último', ironman: 'si Ironman te gana', any: 'si cualquier rival te gana' };
+    const power = { easy: 1, normal: 2, hard: 4, arcade: 5 };
+    const wait = { easy: 'Mucho', normal: 'Algo', hard: 'Poco', arcade: 'Nada' };
+    const assist = ASSIST_LEVELS[this.opt.assist] || 0;
+    const el = this.ui.show('diff', `
+      <div class="panel fade-in" style="max-width:min(1180px,98vw)">
+        <div class="head">ELIGE LA DIFICULTAD <span class="gold" style="font-size:.6em">· ${n} ${n > 1 ? 'JUGADORES' : 'JUGADOR'}</span></div>
+        <div class="dcards">${DIFF_ORDER.map((k) => {
+          const d = DIFFICULTY[k];
+          return `<div class="dcard d-${k}" data-k="${k}">
+            ${k === 'normal' ? '<div class="tag">RECOMENDADO</div>' : ''}
+            <div class="dpips">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= power[k] ? 'on' : ''}"></i>`).join('')}</div>
+            <div class="nm">${d.name.toUpperCase()}</div>
+            <div class="ds">${d.desc}</div>
+            <div class="facts">
+              <div class="rule">Pierdes un crédito ${rule[d.rule]}</div>
+              <div><span>Te esperan</span><b>${wait[k]}</b></div>
+              <div><span>Premios</span><b class="gold">×${String(d.prize).replace('.', ',')}</b></div>
+            </div>
+          </div>`;
+        }).join('')}</div>
+        <div class="hint-keys">${assist ? `Dirección asistida ${assist > 1 ? 'fuerte (premios −20 %)' : 'suave (premios −10 %)'}: cámbiala en Opciones.` : 'Sin dirección asistida: cámbiala en Opciones si juegas en el móvil.'}${isTouch() ? '' : '<br>← → ELEGIR · ENTER ACEPTAR · ESC VOLVER'}</div>
+      </div>`);
+    const cards = [...el.querySelectorAll('.dcard')];
+    this.ui.navigate('diff', cards, {
+      axis: 'h', start: Math.max(0, DIFF_ORDER.indexOf(this.opt.difficulty || 'normal')),
+      onOk: (i, c) => {
+        this.opt.difficulty = c.dataset.k; this.saveOpt();
+        this.ui.hide('diff');
+        this.toSelect(n, c.dataset.k);
+      },
+      onBack: () => { this.ui.hide('diff'); this.toMenu(); },
     });
   }
 
@@ -823,7 +905,7 @@ export class Game {
           else if (this.freeSetup) this.startFreeRace(picks[0]);
           else this.startChampionship(picks, diff);
         },
-        onBack: () => { if (picks.length) { picks.pop(); ask(); } else { this.ui.hide('select'); if (this.freeSetup) this.toFreeRace(); else this.toMenu(); } },
+        onBack: () => { if (picks.length) { picks.pop(); ask(); } else { this.ui.hide('select'); if (this.freeSetup) this.toFreeRace(); else this.toDifficulty(n); } },
       });
     };
     ask();
@@ -861,7 +943,9 @@ export class Game {
   toFreeRace() {
     this.state = 'free';
     const sel = this.freeSetup || { id: 'fandango', reverse: false, time: 'auto', trial: false };
+    if (!DIFFICULTY[sel.diff]) sel.diff = DIFFICULTY[this.opt.freeDiff] ? this.opt.freeDiff : this.opt.difficulty || 'normal';
     this.freeSetup = sel;
+    const cycleDiff = (d) => { sel.diff = DIFF_ORDER[(DIFF_ORDER.indexOf(sel.diff) + d + DIFF_ORDER.length) % DIFF_ORDER.length]; this.opt.freeDiff = sel.diff; this.saveOpt(); };
     const times = ['auto', 'day', 'sunset', 'night'], timeName = { auto: 'DEL CIRCUITO', day: 'DÍA', sunset: 'ATARDECER', night: 'NOCHE' };
     const thumbs = this._thumbs || (this._thumbs = Object.fromEntries(TRACKS.map((d) => [d.id, trackThumb(d)])));
     const render = (focusId) => {
@@ -881,6 +965,7 @@ export class Game {
             </div>`).join('')}</div>
           <div class="menu" style="flex-direction:row;flex-wrap:wrap;justify-content:center;padding-top:4px">
             <div class="btn" data-a="mode" data-opt>MODO <span class="val">${sel.trial ? 'CONTRARRELOJ' : 'CARRERA'}</span></div>
+            ${sel.trial ? '' : `<div class="btn" data-a="rivals" data-opt>RIVALES <span class="val">${DIFFICULTY[sel.diff].name.toUpperCase()}</span></div>`}
             <div class="btn" data-a="dir" data-opt>SENTIDO <span class="val">${sel.reverse ? 'INVERSO' : 'NORMAL'}</span></div>
             <div class="btn" data-a="time" data-opt>LUZ <span class="val">${timeName[sel.time]}</span></div>
             <div class="btn primary" data-a="go">ELEGIR VEHÍCULO</div>
@@ -895,19 +980,27 @@ export class Game {
         onOk: (i, e) => {
           if (e.dataset.id) { sel.id = e.dataset.id; render(sel.id); return; }
           if (e.dataset.a === 'mode') { sel.trial = !sel.trial; render('mode'); }
+          else if (e.dataset.a === 'rivals') { cycleDiff(1); render('rivals'); }
           else if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); }
           else if (e.dataset.a === 'time') { sel.time = times[(times.indexOf(sel.time) + 1) % times.length]; render('time'); }
-          else if (e.dataset.a === 'go') { this.ui.hide('free'); this.toSelect(1, this.opt.difficulty || 'normal'); }
+          else if (e.dataset.a === 'go') { this.ui.hide('free'); this.toSelect(1, sel.diff); }
         },
         onRight: (i, e) => {
           if (e.dataset.a === 'mode') { sel.trial = !sel.trial; render('mode'); }
+          else if (e.dataset.a === 'rivals') { cycleDiff(1); render('rivals'); }
           else if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); }
           else if (e.dataset.a === 'time') { sel.time = times[(times.indexOf(sel.time) + 1) % times.length]; render('time'); }
+        },
+        onLeft: (i, e) => {
+          if (e.dataset.a === 'mode') { sel.trial = !sel.trial; render('mode'); }
+          else if (e.dataset.a === 'rivals') { cycleDiff(-1); render('rivals'); }
+          else if (e.dataset.a === 'dir') { sel.reverse = !sel.reverse; render('dir'); }
+          else if (e.dataset.a === 'time') { sel.time = times[(times.indexOf(sel.time) + times.length - 1) % times.length]; render('time'); }
         },
         onBack: () => { this.ui.hide('free'); this.freeSetup = null; this.toMenu(); },
       });
       // restore focus on option buttons after a re-render
-      if (focusId === 'dir' || focusId === 'time' || focusId === 'mode') { const k = all.findIndex((e) => e.dataset.a === focusId); if (k >= 0) this.ui.nav.focus(k, true); }
+      if (focusId === 'dir' || focusId === 'time' || focusId === 'mode' || focusId === 'rivals') { const k = all.findIndex((e) => e.dataset.a === focusId); if (k >= 0) this.ui.nav.focus(k, true); }
     };
     render();
   }
@@ -918,7 +1011,7 @@ export class Game {
       this.ui.hideAll();
       this.attract = false;
       this.attractTick = null;
-      this.session = new Session([{ truckId: pick.truckId, vehicle: pick.vehicle }], this.opt.difficulty || 'normal', 'all', { id: f.id, reverse: f.reverse, time: f.time === 'auto' ? null : f.time, trial: !!f.trial });
+      this.session = new Session([{ truckId: pick.truckId, vehicle: pick.vehicle }], f.diff || 'normal', 'all', { id: f.id, reverse: f.reverse, time: f.time === 'auto' ? null : f.time, trial: !!f.trial });
       const p = this.session.players[0];
       p.upgrades = { tires: 2, shocks: 2, accel: 2, speed: 2 };
       this.session.raceNo = 6; // a mid-season field
@@ -948,22 +1041,25 @@ export class Game {
               <div class="${r.human ? 'me gold' : 'muted'}">${pl ? fmtMoney(pl.prize + pl.bags) : ''}</div>`;
           }).join('')}
         </div>
-        ${this._lapRecordHTML()}
+        ${this._lapRecordHTML()}${this.session.free ? '' : this._multHTML(summary)}${summary.advice ? `<div class="laprec advice">${summary.advice}</div>` : ''}
         <div class="verdict">${this.session.free ? summary.players.map((p) => `<div class="${p.place === 1 ? 'ok' : ''}"><span class="big">${p.place === 1 ? '¡Victoria!' : p.place + 'º puesto'}</span></div>`).join('') : summary.players.map((p) => {
           const pl = this.session.players[p.index];
           const tag = this.session.players.length > 1 ? `${p.index + 1}P · ` : '';
           if (p.lost) return `<div class="bad"><span class="big">${tag}${p.credits > 0 ? '¡Pierdes un crédito!' : '¡Sin créditos!'}</span><br>${this._lostReason()} · Te ${p.credits === 1 ? 'queda 1 crédito' : `quedan ${p.credits} créditos`}</div>`;
           return `<div class="ok"><span class="big">${tag}${p.place === 1 ? '¡Victoria!' : 'Sigues en carrera'}</span><br>Premio ${fmtMoney(p.prize)}${p.bags ? ` + bolsas ${fmtMoney(p.bags)}` : ''} · Créditos ${p.credits}</div>`;
         }).join('')}</div>
-        <div class="menu" style="padding-top:0"><div class="btn primary">CONTINUAR</div></div>
+        <div class="menu row-menu" style="padding-top:0">${this.session.free
+          ? `<div class="btn primary" data-a="again">CORRER OTRA VEZ</div>${this._replayBtn()}<div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div>`
+          : `<div class="btn primary" data-a="cont">CONTINUAR</div>${this._replayBtn()}`}</div>
       </div>`;
     const free = !!this.session.free;
-    const el = this.ui.show('results', free ? html.replace('<div class="menu" style="padding-top:0"><div class="btn primary">CONTINUAR</div></div>',
-      '<div class="menu" style="padding-top:0"><div class="btn primary" data-a="again">REPETIR CARRERA</div><div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div></div>') : html);
+    const el = this.ui.show('results', html);
     this.audio.music('results');
+    this._resultsAgain = () => this.showResults(summary);
     if (free) {
       this.ui.navigate('results', [...el.querySelectorAll('.btn')], {
         onOk: (i, b) => {
+          if (b.dataset.a === 'replay') return this.toReplay();
           this._fade(() => {
             this.ui.hide('results');
             if (b.dataset.a === 'again') { const s = this.session; s.raceNo = 6; for (const p of s.players) { p.credits = 3; p.alive = true; } this.nextRace(); }
@@ -981,7 +1077,62 @@ export class Game {
       if (this.session.over) return this.toGameOver();
       this.toShop(0);
     });
-    this.ui.navigate('results', [el.querySelector('.btn')], { onOk: next, onBack: next });
+    this.ui.navigate('results', [...el.querySelectorAll('.btn')], { onOk: (i, b) => (b.dataset.a === 'replay' ? this.toReplay() : next()), onBack: next });
+  }
+  // the replay of the race just run (also offered after time trials)
+  _replayBtn() {
+    return this.replayRec && this.replayRec.length > 200 ? `<div class="btn" data-a="replay"><span class="ric">${ICONS.replay}</span>VER REPETICIÓN</div>` : '';
+  }
+  // the replay theatre over the results; back to the same results afterwards
+  toReplay() {
+    const rec = this.replayRec;
+    if (!rec || this.replayView || rec.length < 200) return;
+    rec.closed = true; // the race goes on behind the results: not part of the replay
+    this._fade(() => {
+      this.ui.hide('results');
+      this.stateTick = null;
+      this.liveRace = this.race;
+      this.replayView = new ReplayView(this, rec, () => {
+        // the real race, as it was left, behind the results again
+        this.race = this.liveRace;
+        this.liveRace = null;
+        this.world.setRace(this.race);
+        this.audio.startRace(this.race);
+        const w = this.race.finishOrder[0];
+        this.world.setCamera('tv', { index: w ? w.i : 0 });
+        this.state = 'results';
+        if (this._resultsAgain) this._resultsAgain(); else this.toTitle();
+      });
+      this.replayView.start();
+    });
+  }
+
+  // Like modern games: a hint for the next championship when this level is clearly too
+  // easy (several wins in a row) or too hard (credits lost race after race)
+  // (once per race: the results screen can be shown again after the replay)
+  _advice(summary) {
+    const s = this.session;
+    if (s.free || s.players.length !== 1 || !summary.players[0]) return '';
+    const me = summary.players[0];
+    s.streak = me.place === 1 ? Math.max(1, (s.streak || 0) + 1) : me.lost ? Math.min(-1, (s.streak || 0) - 1) : 0;
+    const i = DIFF_ORDER.indexOf(s.difficulty);
+    let tip = '';
+    if (s.streak >= 4 && i < DIFF_ORDER.length - 1) {
+      const n = DIFFICULTY[DIFF_ORDER[i + 1]];
+      tip = `¿Vas sobrado? En tu próxima partida prueba ${n.name.toUpperCase()}: premios ×${String(n.prize).replace('.', ',')}`;
+    } else if (s.streak <= -2 && i > 0) {
+      const n = DIFFICULTY[DIFF_ORDER[i - 1]];
+      tip = `¿Muy difícil? En ${n.name.toUpperCase()} pierdes un crédito solo ${{ last: 'si llegas el último', ironman: 'si Ironman te gana', any: 'si alguien te gana' }[n.rule]}${(ASSIST_LEVELS[this.opt.assist] || 0) < 2 && isTouch() ? '. También ayuda la dirección asistida (Opciones)' : ''}`;
+    }
+    return tip;
+  }
+
+  // what this race paid, when it is not the plain ×1
+  _multHTML(summary) {
+    if (!summary || summary.mult == null || summary.mult === 1) return '';
+    const d = this.session.diff;
+    const as = summary.assist ? ` · DIRECCIÓN ASISTIDA ${summary.assist > 1 ? 'FUERTE' : 'SUAVE'} (−${summary.assist * 10} %)` : '';
+    return `<div class="laprec mult">PREMIOS <b>×${String(summary.mult).replace('.', ',')}</b> · ${d.name.toUpperCase()}${as}</div>`;
   }
   _lapRecordHTML() {
     const tr = this.race && this.race.track;
@@ -1100,6 +1251,7 @@ export class Game {
         { k: 'touchSize', name: 'TAMAÑO BOTONES', short: 'BOTONES', vals: ['s', 'm', 'l'], lab: { s: 'PEQUEÑO', m: 'NORMAL', l: 'GRANDE' } },
         { k: 'nitroPos', name: 'BOTÓN DE NITRO', short: 'NITRO', vals: ['both', 'gas', 'steer'], lab: { both: 'LOS DOS', gas: 'EN EL GAS', steer: 'EN EL GIRO' } },
       ] : []),
+      { k: 'assist', name: 'DIRECCIÓN ASISTIDA', short: 'ASISTENCIA', vals: ['off', 'soft', 'strong'], lab: { off: 'NO', soft: 'SUAVE', strong: 'FUERTE' } },
       { k: 'autoGas', name: 'ACELERADOR AUTOMÁTICO', short: 'AUTO-GAS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'fps', name: 'MOSTRAR FPS', short: 'FPS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
     ];
@@ -1108,7 +1260,12 @@ export class Game {
       <div class="panel fade-in"><div class="head">OPCIONES</div><div class="menu cols2">
         ${defs.map((d) => `<div class="btn" data-k="${d.k}" data-opt><span class="ln">${d.name}</span><span class="sn">${d.short || d.name}</span> <span class="val"></span></div>`).join('')}
         <div class="btn primary" data-k="back">VOLVER</div>
-      </div><div class="hint-keys">${isTouch() ? 'Toca una opción para cambiarla' : '← → CAMBIAR'}</div></div>`);
+      </div><div class="hint-keys"><span class="ohint"></span>${isTouch() ? 'Toca una opción para cambiarla' : '← → CAMBIAR'}</div></div>`);
+    const paintHint = () => {
+      const lvl = ASSIST_LEVELS[o.assist] || 0;
+      el.querySelector('.ohint').textContent = lvl ? `Dirección asistida ${lvl > 1 ? 'fuerte' : 'suave'}: premios −${lvl * 10} %. ` : '';
+    };
+    paintHint();
     const paint = () => {
       defs.forEach((d) => {
         const v = o[d.k];
@@ -1130,6 +1287,13 @@ export class Game {
       this.touch.layout();
       if (d.k === 'camera' && this.race && this.state === 'race') this._raceCamera(false);
       if (d.k === 'fullscreen') { if (o.fullscreen) enterFullscreen(true); else exitFullscreen(); }
+      if (d.k === 'assist') {
+        // also in the middle of a race (pause menu); the prize follows the strongest level used
+        const lvl = ASSIST_LEVELS[o.assist] || 0;
+        for (const a of this.assists || []) if (a) a.level = lvl;
+        if (this.race && !this.attract && this.race.state !== 'done') this.assistUsed = Math.max(this.assistUsed || 0, lvl);
+        paintHint();
+      }
     };
     const done = () => {
       this.ui.hide('options');
@@ -1150,7 +1314,9 @@ export class Game {
   toHelp(back) {
     const el = this.ui.show('help', `<div class="panel fade-in help-panel" data-min-scale="0.86"><div class="head">CÓMO SE JUEGA</div>
       <div class="help-body">
-        <p>Carreras de 4 vueltas contra los camiones de la CPU. El gris es <b class="gold">Ivan "Ironman" Stewart</b>: si te gana (en dificultad Normal) pierdes un crédito. En Arcade tienes que ganar a todos, como en la recreativa de 1989. Sin créditos, se acaba la partida.</p>
+        <p>Carreras de 4 vueltas contra los camiones de la CPU. El gris es <b class="gold">Ivan "Ironman" Stewart</b>. Hay cuatro dificultades: en <b>Novato</b> solo pierdes un crédito si llegas el último; en <b>Piloto</b> y <b>Experto</b>, si Ironman te gana; en <b>Arcade</b> tienes que ganar a todos, como en la recreativa de 1989. Cuanto más difícil, más pagan las carreras. Sin créditos, se acaba la partida.</p>
+        <p><b>Dirección asistida</b> (Opciones): <i>suave</i> corrige el volante antes de chocar con las vallas y <i>fuerte</i> te lleva por la trazada y levanta el pie antes de las curvas. Ayuda mucho en el móvil, a cambio de un 10 % o un 20 % menos de premio.</p>
+        <p>Al acabar cada carrera puedes ver la <b>REPETICIÓN</b> con cámaras de televisión: el realizador automático no se pierde los saltos (a cámara lenta), los adelantamientos ni la meta. Elige cámara, camión y velocidad, salta por la línea de tiempo, y con el <b>MODO FOTO</b> congela la imagen, gira la cámara y guarda o comparte la foto.</p>
         <p><b>Teclado:</b> ← → girar · ↑ acelerar · ↓ frenar/marcha atrás · ENTER o ESPACIO nitro · ESC pausa.<br>
         <b>Mando:</b> stick o cruceta girar · A acelerar · B frenar · X/RB nitro · START pausa.<br>
         <b>Táctil:</b> botones de giro a la izquierda, acelerar y nitro a la derecha, y otro nitro encima del giro (en Opciones: zurdos, tamaño, qué nitros se ven o joystick).</p>
@@ -1201,7 +1367,7 @@ export class Game {
       const p = queue.shift();
       if (!p) return continueScreen();
       this.enterInitials(p, (name) => {
-        const idx = addScore({ name, score: p.earned, races: this.session.raceNo });
+        const idx = addScore({ name, score: p.earned, races: this.session.raceNo, d: this.session.difficulty });
         this.toScores(() => nextEntry(), idx);
       });
     };

@@ -3,7 +3,7 @@
 // cameras. The simulation lives in js/sim; this module only reads it.
 
 import * as THREE from 'three';
-import { buildTrack } from '../sim/track.js';
+import { buildTrack, BARRIER_ISO } from '../sim/track.js';
 import { trackById } from '../sim/tracks.js';
 import { buildTerrain, loadTerrainTextures } from './terrain.js';
 import { buildBarriers } from './barriers.js';
@@ -196,6 +196,15 @@ export class RaceWorld {
     this.leader = 0;
   }
 
+  // the same field in a new simulation (a replay going back): keep the truck models
+  swapRace(race) {
+    this.race = race;
+    this.prev = race.racers.map((r) => ({ x: r.truck.x, y: r.truck.y, z: r.truck.z, h: r.truck.h }));
+    this.fxState = race.racers.map(() => ({ wet: 0, lastWheel: null, dustAcc: 0, clodAcc: 0, landKick: 0, wasWater: 0 }));
+    this.leader = 0;
+  }
+  showRings(on) { for (const m of this.rings || []) if (m) m.visible = on; }
+
   // time trial ghost: the recorded best run, a see-through copy of its truck
   setGhost(g) {
     if (this.ghost) {
@@ -257,6 +266,17 @@ export class RaceWorld {
       }
     }
     marks.flush(this.view.renderer);
+  }
+
+  // after the simulation jumped (replay seek): no interpolation from the old place,
+  // no tyre mark drawn across the arena, no effects left from before
+  resync(clearMarks = false) {
+    this.savePrev();
+    for (const st of this.fxState) { st.lastWheel = null; st.wasWater = 0; }
+    this._skipMarks = true;
+    this.fx.clear();
+    this.pickups.clear();
+    if (clearMarks) { this.terrain.userData.marks.clear(); this._seedWear(); }
   }
 
   // called before every sim step
@@ -339,7 +359,7 @@ export class RaceWorld {
         const lx = w < 2 ? TRUCK.wheelX : -TRUCK.wheelX, lz = w % 2 ? TRUCK.wheelZ : -TRUCK.wheelZ;
         const wx = t.x + lx * c - lz * sn, wz = t.z + lx * sn + lz * c;
         const lw = st.lastWheel[w];
-        if (grounded && speed > 0.6 && race.state !== 'countdown') {
+        if (grounded && speed > 0.6 && race.state !== 'countdown' && !this._skipMarks) {
           const strength = 0.035 + Math.min(0.08, t.slip * 0.012) + t.throttle * 0.012;
           marks.add(lw[0], lw[1], wx, wz, 0.42, strength, st.wet > 0.05 ? 0.06 * st.wet : 0);
         }
@@ -397,6 +417,7 @@ export class RaceWorld {
       }
     });
     marks.flush(this.view.renderer);
+    this._skipMarks = false;
     // smoke from the volcano
     const vol = this.props && this.props.userData.volcano;
     if (vol && Math.random() < dt * 6) {
@@ -426,7 +447,7 @@ export class RaceWorld {
   _camera(dt) {
     const cam = this.view.camera, cl = this.view.classic;
     this.camT += dt;
-    if (this.camMode !== 'tv' && this._fovTouched && cl) { cam.fov = cl.fov; cam.updateProjectionMatrix(); this._fovTouched = false; }
+    let fov = null; // shots that zoom set their own field of view; the rest use the classic one
     const race = this.race;
     if (this.camMode === 'classic' && cl) {
       if (this._camSnap) { cam.position.copy(cl.pos); this._camSnap = false; }
@@ -508,9 +529,103 @@ export class RaceWorld {
       tv.look.lerp(_v2, Math.min(1, dt * 7));
       cam.lookAt(tv.look);
       const d = Math.max(6, cam.position.distanceTo(tv.look));
-      cam.fov = THREE.MathUtils.clamp(2 * Math.atan(7.5 / d) * 180 / Math.PI, 9, 50);
-      cam.updateProjectionMatrix();
-      this._fovTouched = true;
+      fov = THREE.MathUtils.clamp(2 * Math.atan(7.5 / d) * 180 / Math.PI, 9, 50);
+    } else if (this.camMode === 'heli' && race) {
+      // replays: high above the truck, slowly circling it
+      const i = this.camOpts.index ?? this.leader, tp = this.views[i].root.position, t = race.racers[i].truck;
+      const a = (this.camOpts.phase ?? 0) + this.camT * (this.camOpts.spin ?? 0.1);
+      const rad = this.camOpts.radius ?? 24, hgt = this.camOpts.height ?? 18;
+      _v.set(clamp(tp.x + Math.cos(a) * rad, -82, 82), tp.y + hgt, clamp(tp.z + Math.sin(a) * rad, -60, 62));
+      if (this.camT < 0.02) cam.position.copy(_v); else cam.position.lerp(_v, Math.min(1, dt * 2.5));
+      _v2.set(tp.x + t.vx * 0.25, tp.y + 0.5, tp.z + t.vz * 0.25);
+      if (this.camT < 0.02 || !this._look) this._look = _v2.clone(); else this._look.lerp(_v2, Math.min(1, dt * 4));
+      cam.lookAt(this._look);
+      fov = 34;
+    } else if (this.camMode === 'side' && race) {
+      // replays: alongside the truck, low, looking along it (jumps and slides up close).
+      // It stays on its side of the truck unless a barrier gets in between.
+      const i = this.camOpts.index ?? this.leader, tp = this.views[i].root.position, t = race.racers[i].truck;
+      const tr = this.track, fx = Math.cos(t.h), fz = Math.sin(t.h);
+      if (this.camT < 0.02 || this._sideK == null) { this._sideK = this.camOpts.side ?? 1; this._sidePos = null; }
+      const at = (side, d) => _v.set(tp.x - fz * side * d - fx * 2.4, 0, tp.z + fx * side * d - fz * 2.4);
+      let ok = false;
+      for (const side of [this._sideK, -this._sideK]) {
+        for (const d of [4.6, 3.7, 2.9]) {
+          at(side, d);
+          if (tr.bsdfAt(_v.x, _v.z) < -0.15) { ok = true; break; }
+        }
+        if (ok) { if (side !== this._sideK) { this._sideK = side; this._sidePos = null; } break; }
+      }
+      if (!ok) at(this._sideK, 2.6);
+      _v.y = Math.max(tp.y + 1.15, tr.heightAt(_v.x, _v.z) + 0.5);
+      if (!this._sidePos) this._sidePos = _v.clone(); else this._sidePos.lerp(_v, Math.min(1, dt * 9));
+      cam.position.copy(this._sidePos);
+      _v2.set(tp.x + fx * 2.6, tp.y + 0.7, tp.z + fz * 2.6);
+      cam.lookAt(_v2);
+      this._look = _v2.clone();
+      fov = 50;
+    } else if (this.camMode === 'low' && race) {
+      // replays: a camera at the side of the track, ahead of the truck, which comes past
+      // it; the spot must see the truck now and where it will pass (no mound, no barrier)
+      const i = this.camOpts.index ?? this.leader, tp = this.views[i].root.position, t = race.racers[i].truck;
+      const tr = this.track, p = tr.path;
+      let sp = this._lowSpot;
+      const dist = sp ? Math.hypot(tp.x - sp.x, tp.z - sp.z) : 0;
+      const passed = sp && (tp.x - sp.x) * t.vx + (tp.z - sp.z) * t.vz > 0 && dist > 14;
+      if (sp) this._lowHid = this._los(sp.x, sp.y, sp.z, tp.x, tp.y + 0.9, tp.z) ? 0 : (this._lowHid || 0) + dt;
+      if (!sp || this.camT < 0.02 || passed || dist > 60 || this._lowHid > 0.6) {
+        const k = tr.nearestIndex(t.x, t.z);
+        const dir = t.vx * p.tx[k] + t.vz * p.tz[k] >= 0 ? 1 : -1;
+        const s0 = (this._lowSide = -(this._lowSide || 1));
+        let pick = null, first = null;
+        for (const ahead of [24, 18, 30, 13]) {
+          const j = (k + dir * Math.round(ahead / p.ds) + p.n * 4) % p.n;
+          const py = tr.heightAt(p.x[j], p.z[j]) + 0.9;
+          for (const side of [s0, -s0]) {
+            for (const hgt of [1.6, 3]) {
+              const o = (p.hw[j] + 1.3) * side;
+              const x = p.x[j] - p.tz[j] * o, z = p.z[j] + p.tx[j] * o, y = tr.heightAt(x, z) + hgt;
+              if (Math.abs(x) > 66 || Math.abs(z) > 42) continue;
+              const c = { x, y, z };
+              if (!first) first = c;
+              if (this._los(x, y, z, tp.x, tp.y + 0.9, tp.z) && this._los(x, y, z, p.x[j], py, p.z[j])) { pick = c; break; }
+            }
+            if (pick) break;
+          }
+          if (pick) break;
+        }
+        sp = this._lowSpot = pick || (first && { ...first, y: first.y + 2.5 }) || { x: tp.x + 10, y: tp.y + 4, z: tp.z };
+        this._lowLook = null;
+        this._lowHid = 0;
+      }
+      cam.position.set(sp.x, sp.y, sp.z);
+      _v2.set(tp.x, tp.y + 0.8, tp.z);
+      if (!this._lowLook) this._lowLook = _v2.clone(); else this._lowLook.lerp(_v2, Math.min(1, dt * 10));
+      cam.lookAt(this._lowLook);
+      this._look = this._lowLook.clone();
+      fov = clamp(2 * Math.atan(5.5 / Math.max(4, cam.position.distanceTo(this._lowLook))) * 180 / Math.PI, 14, 62);
+    } else if (this.camMode === 'grid' && race) {
+      // replays, the start: low in front of the grid, looking back at the trucks
+      const tr = this.track, g = tr.grid, sl = tr.startLine;
+      const f = 9 + this.camT * 0.5;
+      _v.set(sl.x + sl.tx * f - sl.tz * 3.5, 0, sl.z + sl.tz * f + sl.tx * 3.5);
+      _v.y = tr.heightAt(_v.x, _v.z) + 2;
+      cam.position.copy(_v);
+      const cx = (g[0].x + g[3].x) / 2, cz = (g[0].z + g[3].z) / 2;
+      _v2.set(cx, tr.heightAt(cx, cz) + 0.9, cz);
+      cam.lookAt(_v2);
+      this._look = _v2.clone();
+      fov = 38;
+    } else if (this.camMode === 'photo' && race) {
+      // photo mode: orbit the truck with the fingers / mouse
+      const o = this.camOpts, tp = this.views[o.index ?? 0].root.position;
+      const cp = Math.cos(o.pitch);
+      const x = tp.x + Math.cos(o.yaw) * cp * o.dist, z = tp.z + Math.sin(o.yaw) * cp * o.dist;
+      const y = Math.max(tp.y + 1 + Math.sin(o.pitch) * o.dist, this.track.heightAt(x, z) + 0.35);
+      cam.position.set(x, y, z);
+      cam.lookAt(tp.x, tp.y + 1, tp.z);
+      this._look = new THREE.Vector3(tp.x, tp.y + 1, tp.z);
+      fov = o.fov ?? 40;
     } else if (this.camMode === 'fixed') {
       const o = this.camOpts;
       cam.position.set(o.pos[0], o.pos[1], o.pos[2]);
@@ -524,11 +639,25 @@ export class RaceWorld {
       _v2.set(tgt.x, tgt.y + 1.2, tgt.z);
       cam.lookAt(_v2);
     }
+    const want = fov ?? (cl ? cl.fov : cam.fov);
+    if (Math.abs(cam.fov - want) > 1e-4) { cam.fov = want; cam.updateProjectionMatrix(); }
     if (this.shake > 0.001) {
       cam.position.x += (Math.random() - 0.5) * this.shake;
       cam.position.y += (Math.random() - 0.5) * this.shake;
       this.shake *= Math.exp(-dt * 8);
     }
+  }
+
+  // line of sight for the replay cameras: neither the ground nor a barrier in between
+  _los(ax, ay, az, bx, by, bz) {
+    const tr = this.track;
+    for (let k = 1; k < 16; k++) {
+      const u = k / 16, x = ax + (bx - ax) * u, z = az + (bz - az) * u, y = ay + (by - ay) * u;
+      const g = tr.heightAt(x, z);
+      if (y < g + 0.1) return false;
+      if (y < g + 1.12 && Math.abs(tr.bsdfAt(x, z) - BARRIER_ISO) < 0.45) return false;
+    }
+    return true;
   }
 
   // live feed on the big screen: a chase camera on the leader

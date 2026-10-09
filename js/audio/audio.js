@@ -112,18 +112,20 @@ export class Audio {
     if (!this.ready || !this.buffers[name] || this.ctx.state !== 'running') return;
     const s = this.ctx.createBufferSource();
     s.buffer = this.buffers[name];
-    s.playbackRate.value = (o.rate || 1) * (1 + (Math.random() - 0.5) * (o.vary ?? 0.08));
+    s.playbackRate.value = (o.rate || 1) * (1 + (Math.random() - 0.5) * (o.vary ?? 0.08)) * (o.ui ? 1 : this._slowRate());
     const g = this.ctx.createGain(); g.gain.value = o.vol ?? 1;
     let node = s.connect(g);
     if (o.pan) { const p = this.ctx.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, o.pan)); node = node.connect(p); }
     node.connect(o.bus || this.sfxBus);
     s.start(0);
   }
-  ui(kind) { this.sfx(kind, { vol: 0.35, vary: 0 }); }
+  ui(kind) { this.sfx(kind, { vol: 0.35, vary: 0, ui: true }); }
+  // replays in slow motion sound slower and deeper
+  _slowRate() { const k = this.timeScale ?? 1; return k < 1 ? 0.45 + 0.55 * k : 1; }
   // race calls are 'minor': they never cut another call short and the same one is not
   // repeated within a few seconds; the rest (track name, go, results) always play
   announce(key, minor = false) {
-    if (!this.ready || this.opt.voice === false) return;
+    if (!this.ready || this.opt.voice === false || this.voiceOff) return; // voiceOff: replays
     const b = this.buffers['v_' + key];
     if (!b || this.ctx.state !== 'running') return;
     const now = this.ctx.currentTime;
@@ -219,6 +221,8 @@ export class Audio {
     const flame = this._loop(this.buffers.flame, out, 0);
     return { r, out, pan, filt, eng, loops, skid, roll, water, flame, rpm: 900, gear: 0, human: r.human, wasWater: false, bright: pre === 'beng' ? 1.35 : 1 };
   }
+  // the same field in a new simulation (a replay going back): keep the voices
+  rebind(race) { this.trucks.forEach((tv, i) => { if (race.racers[i]) tv.r = race.racers[i]; }); }
   _killTruck(t) {
     const stop = (x) => { if (x) { try { x.s.stop(); } catch (e) { /* */ } x.s.disconnect(); x.g.disconnect(); } };
     t.loops.forEach(stop); stop(t.skid); stop(t.roll); stop(t.water); stop(t.flame);
@@ -238,6 +242,7 @@ export class Audio {
       this.lastCount = n;
     }
     const outGain = this.paused ? 0 : quiet ? 0.32 : 1;
+    const slow = this._slowRate();
     for (const tv of this.trucks) {
       const t = tv.r.truck;
       tv.out.gain.setTargetAtTime(outGain, now, 0.25);
@@ -260,7 +265,7 @@ export class Audio {
       else { const k = Math.min(1, (rpm - ENGINE_RPM[1]) / (ENGINE_RPM[2] - ENGINE_RPM[1])); w[1] = Math.cos(k * Math.PI / 2); w[2] = Math.sin(k * Math.PI / 2); }
       tv.loops.forEach((l, i) => {
         l.g.gain.setTargetAtTime(w[i], now, tc);
-        l.s.playbackRate.setTargetAtTime(Math.max(0.5, Math.min(2.2, rpm / ENGINE_RPM[i])), now, tc);
+        l.s.playbackRate.setTargetAtTime(Math.max(0.5, Math.min(2.2, rpm / ENGINE_RPM[i])) * slow, now, tc);
       });
       const boost = t.nitroT > 0 ? 1 : 0;
       const base = tv.human ? 0.62 : 0.34;

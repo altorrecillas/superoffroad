@@ -22,7 +22,7 @@ for (let n = 0; n < RACES; n++) {
   if (!cache.has(key)) cache.set(key, buildTrack(trackById(id), { reverse }));
   const track = cache.get(key);
   const entries = s.entries();
-  const race = new Race(track, entries, { seed: +seedArg + n, dpa: s.diff.dpa });
+  const race = new Race(track, entries, { seed: +seedArg + n, ...s.raceOpts() });
   const me = race.racers.find((r) => r.human);
   const brain = new AIDriver(me.truck, track, { skill: SKILL, aggression: 0.6, seed: +seedArg + 5 + n });
   const inp = { steer: 0, throttle: 1, brake: 0, nitro: false };

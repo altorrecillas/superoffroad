@@ -16,7 +16,9 @@ export class Race {
     this.laps = opts.laps ?? LAPS;
     this.r = rng(opts.seed ?? 12345);
     this.pickupsOn = opts.pickups ?? true;
-    this.dpaStrength = opts.dpa ?? 0.07;
+    // catch-up (the arcade's DPA): ease off when ahead of the player / push when behind
+    this.dpaDown = opts.dpaDown ?? opts.dpa ?? 0.07;
+    this.dpaUp = opts.dpaUp ?? opts.dpa ?? 0.07;
     this.state = 'countdown';
     this.time = -COUNTDOWN;   // race clock (negative during the countdown)
     this.events = [];
@@ -77,7 +79,7 @@ export class Race {
         inp = r.ai.update(dt, trucks);
         if (this.autopilotSkill < 0) inp.throttle *= 0.45; // test: a hopeless driver
       } else if (r.human) inp = inputs[r.entry.player] || COAST;
-      else inp = r.ai.update(dt, trucks);
+      else { r.ai.lastLap = r.lap >= this.laps - 1; inp = r.ai.update(dt, trucks); }
       t.step(dt, inp, tr);
       for (const ev of t.events) this.events.push([ev[0], r.i, ...ev.slice(1)]);
     }
@@ -153,8 +155,8 @@ export class Race {
     for (const r of this.racers) {
       if (!r.ai || r.human) continue;
       const gap = r.prog - best; // + ahead of the best human
-      const k = this.dpaStrength * (r.entry.ai?.dpaScale ?? 1);
-      const target = 1 - clamp(gap / 70, -1, 1) * k;
+      const sc = r.entry.ai?.dpaScale ?? 1;
+      const target = gap > 0 ? 1 - Math.min(1, gap / 70) * this.dpaDown * sc : 1 + Math.min(1, -gap / 70) * this.dpaUp * sc;
       r.ai.dpa += (target - r.ai.dpa) * Math.min(1, dt * 0.5);
     }
   }

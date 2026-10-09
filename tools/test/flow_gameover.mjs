@@ -17,10 +17,11 @@ const shot = (n) => { console.log('stage', n); return page.screenshot({ path: `$
 try {
   await waitState('title', 90000);
   await page.keyboard.press('Enter'); await waitState('menu');
-  // difficulty -> arcade
-  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('ArrowRight'); await page.waitForTimeout(200);
-  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('Enter'); await page.waitForTimeout(400); // 1 JUGADOR -> difficulty cards
+  // difficulty -> ARCADE (two cards to the right of PILOTO)
+  await page.keyboard.press('ArrowRight'); await page.keyboard.press('ArrowRight'); await page.waitForTimeout(200);
+  const dk = await page.evaluate(() => document.querySelector('#diff .dcard.focus')?.dataset.k);
+  console.log('difficulty card:', dk);
   await page.keyboard.press('Enter'); await page.waitForTimeout(400);
   await page.keyboard.press('Enter');
   await waitState('race', 120000);

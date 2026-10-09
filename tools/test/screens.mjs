@@ -32,7 +32,7 @@ const names = [];
 // does every panel fit inside the viewport (after any scaling)?
 const check = () => page.evaluate(() => {
   const out = [];
-  for (const p of document.querySelectorAll('#ui .screen .panel, #ui .screen .banner')) {
+  for (const p of document.querySelectorAll('#ui .screen .panel, #ui .screen .banner, #ui .screen .rp-bar, #ui .screen .ph-bar')) {
     const r = p.getBoundingClientRect();
     const clipped = r.top < -1 || r.left < -1 || r.bottom > innerHeight + 1 || r.right > innerWidth + 1;
     const scrolls = p.scrollHeight > p.clientHeight + 2;
@@ -41,7 +41,7 @@ const check = () => page.evaluate(() => {
     else if (k !== '1') out.push(`${p.closest('.screen').id}: cabe a escala x${k}`);
   }
   // labels wider than their box (clipped or spilling text)
-  for (const el of document.querySelectorAll('#ui .screen .btn, #ui .screen .item, #ui .screen .card .nm, #ui .screen .card .who, #ui .screen .vtab, #ui .screen .head, #ui .screen .verdict, #hud .hud-me .line, #hud .hud-board > div')) {
+  for (const el of document.querySelectorAll('#ui .screen .btn, #ui .screen .rbtn, #ui .screen .dcard .facts div, #ui .screen .item, #ui .screen .card .nm, #ui .screen .card .who, #ui .screen .vtab, #ui .screen .head, #ui .screen .verdict, #hud .hud-me .line, #hud .hud-board > div')) {
     if (!el.offsetParent) continue;
     if (el.scrollWidth > el.clientWidth + 1) out.push(`TEXTO NO CABE "${el.textContent.trim().replace(/\s+/g, ' ').slice(0, 34)}" (${el.scrollWidth}>${el.clientWidth})`);
   }
@@ -60,7 +60,8 @@ await snap('02menu', () => window.__game.toMenu());
 await snap('03options', () => { const g = window.__game; g.ui.hide('menu'); g.toOptions(() => {}); });
 await snap('04help', () => { const g = window.__game; g.ui.hide('options'); g.toHelp(() => {}); });
 await snap('05scores', () => { const g = window.__game; g.ui.hide('help'); g.toScores(() => {}); });
-await snap('06select', () => { const g = window.__game; g.ui.hide('scores'); g.toSelect(1, 'normal'); });
+await snap('06diff', () => { const g = window.__game; g.ui.hide('scores'); g.toDifficulty(1); });
+await snap('06select', () => { const g = window.__game; g.ui.hide('diff'); g.toSelect(1, 'normal'); });
 await snap('07free', () => { const g = window.__game; g.ui.hide('select'); g.toFreeRace(); });
 await snap('08intro', () => { const g = window.__game; g.ui.hide('free'); g.freeSetup = null; g.startChampionship([{ truckId: 'red', vehicle: 'truck' }], 'normal'); g.warp = 0.02; }, 2500);
 await snap('09race', () => { const g = window.__game; g.introT = g.introHold; g.warp = 1; }, 6000);
@@ -70,6 +71,10 @@ await snap('11results', () => {
   const race = g.race; for (let t = 0; t < 400 && race.state !== 'done'; t += 1 / 60) race.step(1 / 60, []);
   g.showResults(g.session.applyResults(race));
 });
+await snap('11replay', () => window.__game.toReplay(), 3000);
+await snap('11photo', () => window.__game.replayView._photoOpen(), 1500);
+await snap('11photoprev', () => window.__game.replayView._shoot(), 3000);
+await snap('11back', () => { const v = window.__game.replayView; window.__game.ui.hide('photoprev'); v._photoClose(); v.exit(); }, 2500);
 await snap('12shop', () => { const g = window.__game; g.ui.hide('results'); g.session.players[0].money = 180000; g.toShop(0); });
 await snap('13gameover', () => {
   const g = window.__game; g.ui.hide('shop'); g.view.setActive(null, null); g.stateTick = null;

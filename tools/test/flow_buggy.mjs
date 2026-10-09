@@ -26,6 +26,7 @@ try {
   await waitState('title', 90000);
   await page.keyboard.press('Enter'); await waitState('menu');
   await page.keyboard.press('Enter'); await page.waitForTimeout(400);
+  await page.keyboard.press('Enter'); await page.waitForTimeout(400); // difficulty: PILOTO
   await page.keyboard.press('ArrowDown'); await page.waitForTimeout(300); await shot('1select');
   const tab = await page.evaluate(() => document.querySelector('#select .vtab.on')?.dataset.v);
   check(tab === 'buggy', `select tab is ${tab}`);

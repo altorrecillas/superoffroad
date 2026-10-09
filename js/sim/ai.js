@@ -16,6 +16,13 @@ export class AIDriver {
     this.nitroCd = 1.5 + this.r() * 2;
     this.wander = 0; this.wanderT = 0; this.wanderTarget = 0;
     this.dpa = 1;
+    // personality by difficulty: human mistakes (0..1), nitros kept for the last lap
+    this.mistakes = opts.mistakes ?? 0;
+    this.reserve = opts.reserve ?? 0;
+    this.noWander = !!opts.noWander; // a pure racing line
+    this.assist = !!opts.assist;     // advice for a human (steering assist): no dodging, no reversing
+    this.errT = 0; this.errKind = 0; this.errCd = 5 + this.r() * 6;
+    this.lastLap = false;           // set by the race
     this.inp = { steer: 0, throttle: 0, brake: 0, nitro: false };
     this.rebuildProfile();
   }
@@ -58,7 +65,7 @@ export class AIDriver {
     this.wanderT -= dt;
     if (this.wanderT <= 0) {
       this.wanderT = 1.5 + this.r() * 2.5;
-      this.wanderTarget = (this.r() * 2 - 1) * 1.6 * (1.1 - this.skill * 0.5);
+      this.wanderTarget = this.noWander ? 0 : (this.r() * 2 - 1) * 1.6 * (1.1 - this.skill * 0.5);
     }
     this.wander += (this.wanderTarget - this.wander) * Math.min(1, dt * 0.8);
 
@@ -71,7 +78,7 @@ export class AIDriver {
     const ch = Math.cos(t.h), sh = Math.sin(t.h);
     const pi = ln.idx[kt];
     const nx = -p.tz[pi], nz = p.tx[pi];
-    for (const o of trucks) {
+    for (const o of this.assist ? [] : trucks) {
       if (o === t) continue;
       const dx = o.x - t.x, dz = o.z - t.z;
       const ahead = dx * ch + dz * sh;
@@ -111,26 +118,41 @@ export class AIDriver {
     const mul = (0.84 + 0.16 * this.skill) * this.dpa;
     let vt = Infinity;
     for (let o = 0; o <= 3; o++) vt = Math.min(vt, this.profile[(k + o) % ln.m]);
-    vt *= mul;
+    vt *= mul * (this.lastLap ? 1 + 0.012 * this.skill : 1); // a little push on the last lap
+
+    // human mistakes (lower levels): braking late into a corner and running wide, or a
+    // moment of hesitation on the throttle
+    if (this.errT > 0) this.errT -= dt;
+    else if (this.mistakes > 0 && (this.errCd -= dt) <= 0 && speed > 8 && !t.air) {
+      this.errCd = (7 + this.r() * 9) / this.mistakes;
+      let corner = false;
+      for (let o = 4; o < 22; o++) if (this.profile[(k + o) % ln.m] < t.stats.vmax * 0.7) { corner = true; break; }
+      if (corner) { this.errKind = 1; this.errT = 1.3; } else if (this.r() < 0.5) { this.errKind = 2; this.errT = 0.55; }
+    }
+    if (this.errT > 0 && this.errKind === 1) vt *= 1.2;
     let throttle = 1, brake = 0;
     if (speed > vt + 0.8) { throttle = 0; brake = clamp((speed - vt) / 5, 0.15, 1); }
     else if (speed > vt - 0.6) throttle = 0.55;
     if (Math.abs(err) > 1.2 && speed > 8) { throttle = 0; brake = 0.6; }
+    if (this.errT > 0 && this.errKind === 2) throttle = Math.min(throttle, 0.35);
 
     // nitro on straights
     let nitro = false;
     this.nitroCd -= dt;
-    if (t.nitros > 0 && t.nitroT <= 0 && this.nitroCd <= 0 && speed > 9 && !t.air) {
+    // the best drivers keep a couple of nitros for the last lap and spend them all there
+    const spare = this.lastLap || t.nitros > this.reserve;
+    if (t.nitros > 0 && spare && t.nitroT <= 0 && this.nitroCd <= 0 && speed > 9 && !t.air) {
       let straight = true;
       // the boost lasts ~40 m: only fire it when the straight is long enough
       for (let o = 1; o < 19; o++) if (this.profile[(k + o) % ln.m] < t.stats.vmax * 0.82) { straight = false; break; }
-      if (straight && this.r() < dt * (0.6 + 1.6 * this.aggr)) {
+      if (straight && this.r() < dt * (0.6 + 1.6 * this.aggr) * (this.lastLap ? 2.5 : 1)) {
         nitro = true;
         this.nitroCd = 2.5 + this.r() * 3 * (1.2 - this.aggr);
       }
     }
 
     // stuck recovery
+    if (this.assist) { inp.steer = steer; inp.throttle = throttle; inp.brake = brake; inp.nitro = false; return inp; }
     if (this.revT > 0) {
       this.revT -= dt;
       inp.steer = -this.revSteer; inp.throttle = 0; inp.brake = 1; inp.nitro = false;
