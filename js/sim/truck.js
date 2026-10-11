@@ -63,6 +63,7 @@ export class TruckSim {
     this.n = [0, 1, 0];
     this.hAbove = 0;
     this.frozen = false;
+    this.power = 1; // engine multiplier: the race's catch-up for CPU trucks behind the player
   }
 
   place(x, z, h, track) {
@@ -121,12 +122,12 @@ export class TruckSim {
 
       // --- drive
       const wet = depth > 0.04 ? clamp(depth / 0.4, 0, 1) : 0;
-      const vmax = st.vmax * (1 - 0.38 * wet) * (boost ? 1.38 : 1);
+      const vmax = st.vmax * (1 - 0.38 * wet) * (boost ? 1.38 : 1) * this.power;
       let a = 0;
       if (inp.throttle > 0) {
         if (vf < vmax) {
           const r = Math.max(0, vf) / vmax;
-          a = st.accel * inp.throttle * (1 - r * r * r) * (boost ? 2.1 : 1);
+          a = st.accel * inp.throttle * (1 - r * r * r) * (boost ? 2.1 : 1) * this.power;
           if (vf < 0) a += 6; // throttle while rolling back
         } else a = -(vf - vmax) * 1.2;
       } else if (boost && !(inp.brake > 0)) {

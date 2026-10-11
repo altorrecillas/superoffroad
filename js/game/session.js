@@ -18,20 +18,23 @@ export const CREDIT_CASH = 200000;
 export const START_CREDITS = 3;
 export const START_NITROS = 10;
 // Four levels, as racing games present them:
-//  dpaDown / dpaUp: the arcade's Dynamic Play Adjustment, now asymmetric: how much a
-//    CPU truck eases off when it is ahead of the best player, and how much it pushes
-//    when it is behind (beginners get waited for, experts get chased)
+//  dpaDown: the arcade's Dynamic Play Adjustment: how much a CPU truck eases off when
+//    it is ahead of the best player (ironWait scales it for Ironman)
+//  catchUp / dpaUp: a CPU truck more than 15 m behind the player drives sharper (later
+//    braking, faster corners, fewer mistakes) and gets more engine
+//  base + rampTop: the field's pace at the start of the championship and its growth;
+//  adapt: Novato and Piloto follow the player's form (easy wins sharpen the rivals)
 //  skill: driving precision; mistakes: how often they brake late or hesitate (0..1);
 //  reserve: nitros kept for the last lap; match: CPU upgrades relative to the player's
 //  average level (Ironman always one more); prize: money and score multiplier
 export const DIFFICULTY = {
-  easy: { name: 'Novato', tag: 'NOV', dpaDown: 0.12, dpaUp: 0.02, skill: 0.95, rampTop: 0.08, upEvery: 5, rule: 'last', match: -2, mistakes: 0.8, reserve: 0, prize: 0.75,
+  easy: { name: 'Novato', tag: 'NOV', base: 0.84, skill: 0.95, rampTop: 0.08, dpaDown: 0.18, dpaUp: 0.06, catchUp: 1, upEvery: 5, rule: 'last', ironWait: 1, adapt: { win: 2, lose: 1.5, rate: 0.012, min: -0.08, max: 0.07 }, match: -2, mistakes: 0.8, reserve: 0, prize: 0.75,
     desc: 'Para aprender: los rivales te esperan y fallan a menudo.' },
-  normal: { name: 'Piloto', tag: 'PIL', dpaDown: 0.1, dpaUp: 0.04, skill: 0.96, rampTop: 0.09, upEvery: 4, rule: 'ironman', match: -1, mistakes: 0.65, reserve: 0, prize: 1,
-    desc: 'La experiencia clásica: rivales que te plantan cara y mejoran carrera a carrera.' },
-  hard: { name: 'Experto', tag: 'EXP', dpaDown: 0.045, dpaUp: 0.055, skill: 1.03, rampTop: 0.15, upEvery: 3, rule: 'ironman', match: 0, mistakes: 0.22, reserve: 1, prize: 1.25,
+  normal: { name: 'Piloto', tag: 'PIL', base: 0.9, skill: 0.98, rampTop: 0.1, dpaDown: 0.16, dpaUp: 0.1, catchUp: 1.3, upEvery: 4, rule: 'ironman', ironWait: 1, adapt: { win: 1, lose: 2, rate: 0.014, min: -0.06, max: 0.12 }, match: -1, mistakes: 0.5, reserve: 0, prize: 1,
+    desc: 'La experiencia clásica: rivales que te plantan cara y se adaptan a tu ritmo.' },
+  hard: { name: 'Experto', tag: 'EXP', base: 0.94, skill: 1.03, rampTop: 0.12, dpaDown: 0.06, dpaUp: 0.08, catchUp: 1, upEvery: 3, rule: 'ironman', match: 0, mistakes: 0.2, reserve: 1, prize: 1.25,
     desc: 'Rivales afilados que casi no fallan y guardan nitro para la última vuelta.' },
-  arcade: { name: 'Arcade', tag: 'ARC', dpaDown: 0.02, dpaUp: 0.06, skill: 1.1, rampTop: 0.17, upEvery: 3, rule: 'any', match: 0, mistakes: 0, reserve: 2, prize: 1.5,
+  arcade: { name: 'Arcade', tag: 'ARC', base: 0.97, skill: 1.08, rampTop: 0.12, dpaDown: 0.02, dpaUp: 0.09, catchUp: 1, upEvery: 3, rule: 'any', match: 0, mistakes: 0, reserve: 2, prize: 1.5,
     desc: 'La recreativa de 1989 sin concesiones: nadie te espera y tienes que ganar a todos.' },
 };
 export const DIFF_ORDER = ['easy', 'normal', 'hard', 'arcade'];
@@ -45,6 +48,9 @@ export class Session {
     this.free = free; // single race: { id, reverse, time, trial }
     this.diff = DIFFICULTY[difficulty] || DIFFICULTY.normal;
     this.raceNo = 0;
+    // adaptive levels (Novato, Piloto): the rivals follow the player's form, sharper
+    // after easy wins, a little softer after heavy defeats
+    this.form = 0;
     this.players = players.map((p, i) => ({
       index: i,
       truckId: p.truckId,
@@ -82,7 +88,7 @@ export class Session {
   }
 
   // the options a race of this session needs
-  raceOpts() { return { dpaDown: this.diff.dpaDown, dpaUp: this.diff.dpaUp }; }
+  raceOpts() { return { dpaDown: this.diff.dpaDown, dpaUp: this.diff.dpaUp, catchUp: this.diff.catchUp }; }
 
   cpuSetup(def) {
     const n = this.raceNo, d = this.diff;
@@ -94,7 +100,7 @@ export class Session {
     const lvl = Math.max(0, Math.min(MAX_LEVEL, Math.max(scheduled, matched)));
     const ramp = Math.min(1, n / 14);
     // the field gets sharper through the championship, up to a ceiling per level
-    let skill = def.cpu.skill * d.skill * (0.86 + (d.rampTop ?? 0.16) * ramp) + this.lap * 0.03;
+    let skill = def.cpu.skill * d.skill * ((d.base ?? 0.86) + (d.rampTop ?? 0.16) * ramp) + this.lap * 0.03 + (this.form || 0);
     skill = Math.min(1.2, skill);
     const ups = { tires: lvl, shocks: lvl, accel: lvl, speed: lvl };
     if (!ironman && lvl > 0) {
@@ -105,7 +111,7 @@ export class Session {
     return {
       upgrades: ups,
       nitros: 4 + Math.min(8, Math.floor(n / 2)) + (ironman ? 2 : 0),
-      ai: { skill, aggression: def.cpu.aggression, bias: def.cpu.bias, dpaScale: ironman ? 0.7 : 1,
+      ai: { skill, aggression: def.cpu.aggression, bias: def.cpu.bias, dpaScale: ironman ? d.ironWait ?? 0.7 : 1,
         mistakes: d.mistakes * (ironman ? 0.5 : 1), reserve: d.reserve },
     };
   }
@@ -150,6 +156,7 @@ export class Session {
       ironman: !!r.entry.ironman,
     }));
     this.lastOrder = rows.map((r) => r.truckId);
+    this._adapt(race);
     const cpuPlaces = rows.filter((r) => !r.human).map((r) => r.place);
     const ironPlace = rows.find((r) => r.ironman)?.place ?? 99;
     const out = { rows, players: [], raceNo: this.raceNo, mult: this.prizeMult(opts.assist || 0), assist: opts.assist || 0 };
@@ -175,6 +182,22 @@ export class Session {
     }
     this.raceNo++;
     return out;
+  }
+
+  // the best player's margin at the line moves the form: winning by more than
+  // adapt.win seconds sharpens the rivals, losing by more than adapt.lose softens
+  // them; close finishes leave it as it is (those are the races we want)
+  _adapt(race) {
+    const a = this.diff.adapt;
+    if (!a || this.free) return;
+    const fo = race.finishOrder, humans = fo.filter((r) => r.human);
+    if (!humans.length) return;
+    const me = humans[0];
+    const t = (r) => (r.finished && !r.dnf ? r.finishTime : race.time + 4);
+    const margin = me.place === 1 ? (fo[1] ? t(fo[1]) - t(me) : 4) : t(fo[0]) - t(me);
+    const m = Math.max(-6, Math.min(6, margin));
+    const step = m > a.win ? m - a.win : m < -a.lose ? m + a.lose : 0;
+    this.form = Math.max(a.min, Math.min(a.max, this.form + step * a.rate));
   }
 
   // a player without credits is out (their truck goes back to the CPU)

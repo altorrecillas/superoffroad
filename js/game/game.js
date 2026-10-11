@@ -21,6 +21,7 @@ import { TRUCKS, PLAYER_TRUCKS, truckDef } from './drivers.js';
 import { lapKey, lapRecord, submitLap, loadLaps } from './records.js';
 import { GhostRecorder, ghostKey, loadGhost, saveGhost, ghostTimes } from './ghost.js';
 import { ReplayRecorder, quantize } from './replay.js';
+import { ironmanRun, medalTimes, medalFor, medalRank, saveMedal, loadMedals, medalIcon, MEDALS, MEDAL_NAME } from './medals.js';
 import { ReplayView } from './replayview.js';
 import { SteerAssist, ASSIST_LEVELS } from '../sim/assist.js';
 import {
@@ -100,7 +101,7 @@ export class Game {
   constructor() {
     this.opt = Object.assign({
       quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', nitroPos: 'both', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
-      assist: isTouch() ? 'soft' : 'off', difficulty: 'normal',
+      assist: isTouch() ? 'soft' : 'off', difficulty: 'normal', guide: true,
     }, this._loadOpt());
     if (!DIFFICULTY[this.opt.difficulty]) this.opt.difficulty = 'normal';
     if (ASSIST_LEVELS[this.opt.assist] == null) this.opt.assist = 'off';
@@ -367,20 +368,24 @@ export class Game {
       });
     }
     this.world.setRace(this.race);
+    this._applyGuide();
     this.trial = null;
     if (trial) {
       const key = ghostKey(id, reverse) + (laps !== 3 ? `-${laps}` : ''); // other lap counts (tests) keep their own ghost
       const me = this.race.racers.find((r) => r.human);
-      this.trial = { key, rec: loadGhost(key), recorder: new GhostRecorder(me), me };
+      // Ironman's medal run, same vehicle and garage (computed while the screen is black)
+      const iron = ironmanRun(track, me.entry.vehicle || 'truck', this.race.laps, me.entry.upgrades);
+      const got = loadMedals()[key];
+      this.trial = { key, rec: loadGhost(key), recorder: new GhostRecorder(me), me, iron, medal: got ? got.m : null };
     }
-    this.world.setGhost(this.trial && this.trial.rec);
+    this.world.setGhosts(this.trial ? [{ g: this.trial.rec, kind: 'me' }, { g: this.trial.iron, kind: 'iron' }] : []);
     this.acc = 0;
     this.audio.startRace(this.race);
     if (this.attract) {
       this.world.setCamera('classic', { snap: true });
       return;
     }
-    this.hud.trial = this.trial ? { rec: this.trial.rec } : null;
+    this.hud.trial = this.trial ? { rec: this.trial.rec, iron: this.trial.iron, medal: this.trial.medal } : null;
     this.hud.build(this.race, this.session);
     this.world.refit(); // frame the arena below the board
     this.touch.root.classList.remove('intro');
@@ -399,6 +404,12 @@ export class Game {
       ${this.session.raceNo === 0 && !this.session.free && this.session.players.length === 1 ? `<div class="howto">${this._controlsLine()}</div>` : ''}</div>`, 'passive');
     this.audio.music('race');
     this.audio.announce('track_' + id);
+  }
+
+  // the racing line ahead of the player (one player only: on a shared screen it would clutter)
+  _applyGuide() {
+    const humans = this.race ? this.race.racers.filter((r) => r.human) : [];
+    this.world.setGuide(!this.attract && humans.length === 1 && this.opt.guide !== false ? humans[0].i : -1);
   }
 
   // the announcer's calls on the player's own moments
@@ -593,6 +604,9 @@ export class Game {
     let saved = false;
     if (done) {
       saved = saveGhost(T.key, { t: me.finishTime, laps: T.laps || [], v: me.entry.vehicle || 'truck', c: me.entry.truckId, at: Date.now(), s: T.recorder.s });
+      // the medal of this run, kept if it is better than the one already won here
+      T.got = medalFor(me.finishTime, T.iron && T.iron.t);
+      T.newMedal = saveMedal(T.key, T.got, me.finishTime, me.entry.vehicle || 'truck');
     }
     this.world.setCamera('tv', { index: me.i });
     this.audio.announce(saved && prev ? 'new_record' : 'race_over');
@@ -620,14 +634,22 @@ export class Game {
       : saved ? `<div class="ok"><span class="big">${fmtTime(me.finishTime)}</span><br>Primer tiempo: desde ahora correrás contra este fantasma</div>`
       : Math.abs(me.finishTime - prev.t) < 0.005 ? `<div><span class="big">${fmtTime(me.finishTime)}</span><br>¡Empate exacto con tu récord!</div>`
       : `<div><span class="big">${fmtTime(me.finishTime)}</span><br><span class="bad">+${(me.finishTime - prev.t).toFixed(2)} s</span> sobre tu récord (${fmtTime(prev.t)})</div>`;
+    // the three medal times (Ironman's run sets them) and the one won
+    const mt = T.iron ? medalTimes(T.iron.t) : null;
+    const got = T.got || null, bestEver = medalRank(T.medal) > medalRank(got) ? T.medal : got;
+    const medalsRow = mt ? `<div class="medals">${MEDALS.slice().reverse().map((m) => `<div class="mt${m === got ? ' got' : ''}${medalRank(m) <= medalRank(bestEver) ? ' won' : ''}">${medalIcon(m)}<span>${MEDAL_NAME[m]}</span><b>${fmtTime(mt[m])}</b></div>`).join('')}</div>` : '';
+    const medalLine = !done || !mt ? ''
+      : got ? `<div class="medal-msg ${got}">${medalIcon(got, 'big')}¡MEDALLA DE ${MEDAL_NAME[got]}!${got === 'gold' ? ' Le has ganado a Ironman' : ` · el ${MEDAL_NAME[MEDALS[medalRank(got) + 1]].toLowerCase()} está a ${(me.finishTime - mt[MEDALS[medalRank(got) + 1]]).toFixed(2)} s`}</div>`
+      : `<div class="medal-msg none">Sin medalla · el bronce está a ${(me.finishTime - mt.bronze).toFixed(2)} s</div>`;
     const el = this.ui.show('results', `
       <div class="panel fade-in" style="max-width:96vw">
         <div class="head">CONTRARRELOJ · ${esc(def.name).toUpperCase()}${this.session.free.reverse ? ' (INVERSO)' : ''}</div>
+        ${medalsRow}
         <div class="table trial" style="padding:4px 18px 8px">
           <div class="hd">VUELTA</div><div class="hd">TIEMPO</div><div class="hd">VS. RÉCORD</div>
           ${rows}
         </div>
-        <div class="verdict">${verdict}</div>
+        <div class="verdict">${medalLine}${verdict}</div>
         <div class="menu row-menu" style="padding-top:0"><div class="btn primary" data-a="again">OTRA VEZ</div>${this._replayBtn()}<div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div></div>
       </div>`);
     this.audio.music('results');
@@ -822,7 +844,7 @@ export class Game {
     this.ui.hide('menu');
     const rule = { last: 'si llegas el último', ironman: 'si Ironman te gana', any: 'si cualquier rival te gana' };
     const power = { easy: 1, normal: 2, hard: 4, arcade: 5 };
-    const wait = { easy: 'Mucho', normal: 'Algo', hard: 'Poco', arcade: 'Nada' };
+    const rivals = { easy: 'Te esperan', normal: 'Se adaptan', hard: 'Aprietan', arcade: 'Implacables' };
     const assist = ASSIST_LEVELS[this.opt.assist] || 0;
     const el = this.ui.show('diff', `
       <div class="panel fade-in" style="max-width:min(1180px,98vw)">
@@ -836,7 +858,7 @@ export class Game {
             <div class="ds">${d.desc}</div>
             <div class="facts">
               <div class="rule">Pierdes un crédito ${rule[d.rule]}</div>
-              <div><span>Te esperan</span><b>${wait[k]}</b></div>
+              <div><span>Rivales</span><b>${rivals[k]}</b></div>
               <div><span>Premios</span><b class="gold">×${String(d.prize).replace('.', ',')}</b></div>
             </div>
           </div>`;
@@ -950,9 +972,12 @@ export class Game {
     const thumbs = this._thumbs || (this._thumbs = Object.fromEntries(TRACKS.map((d) => [d.id, trackThumb(d)])));
     const render = (focusId) => {
       // cards show the best lap (race) or the best run with its ghost (time trial)
-      const recs = loadLaps(), runs = ghostTimes();
+      const recs = loadLaps(), runs = ghostTimes(), medals = loadMedals();
       const rec = (d) => {
-        if (sel.trial) { const t = runs[ghostKey(d.id, sel.reverse)]; return t ? 'RÉCORD ' + fmtTime(t) : '&nbsp;'; }
+        if (sel.trial) {
+          const k = ghostKey(d.id, sel.reverse), t = runs[k], m = medals[k];
+          return t ? `${m ? medalIcon(m.m) : ''}${fmtTime(t)}` : 'SIN TIEMPO';
+        }
         const r = recs[lapKey(d.id, sel.reverse)]; return r ? 'MEJOR ' + fmtTime(r.t) : '&nbsp;';
       };
       const el = this.ui.show('free', `
@@ -1252,6 +1277,7 @@ export class Game {
         { k: 'nitroPos', name: 'BOTÓN DE NITRO', short: 'NITRO', vals: ['both', 'gas', 'steer'], lab: { both: 'LOS DOS', gas: 'EN EL GAS', steer: 'EN EL GIRO' } },
       ] : []),
       { k: 'assist', name: 'DIRECCIÓN ASISTIDA', short: 'ASISTENCIA', vals: ['off', 'soft', 'strong'], lab: { off: 'NO', soft: 'SUAVE', strong: 'FUERTE' } },
+      { k: 'guide', name: 'LÍNEA DE CARRERA', short: 'TRAZADA', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'autoGas', name: 'ACELERADOR AUTOMÁTICO', short: 'AUTO-GAS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'fps', name: 'MOSTRAR FPS', short: 'FPS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
     ];
@@ -1287,6 +1313,7 @@ export class Game {
       this.touch.layout();
       if (d.k === 'camera' && this.race && this.state === 'race') this._raceCamera(false);
       if (d.k === 'fullscreen') { if (o.fullscreen) enterFullscreen(true); else exitFullscreen(); }
+      if (d.k === 'guide' && this.race && !this.attract && !this.replayView) this._applyGuide();
       if (d.k === 'assist') {
         // also in the middle of a race (pause menu); the prize follows the strongest level used
         const lvl = ASSIST_LEVELS[o.assist] || 0;
@@ -1315,6 +1342,8 @@ export class Game {
     const el = this.ui.show('help', `<div class="panel fade-in help-panel" data-min-scale="0.86"><div class="head">CÓMO SE JUEGA</div>
       <div class="help-body">
         <p>Carreras de 4 vueltas contra los camiones de la CPU. El gris es <b class="gold">Ivan "Ironman" Stewart</b>. Hay cuatro dificultades: en <b>Novato</b> solo pierdes un crédito si llegas el último; en <b>Piloto</b> y <b>Experto</b>, si Ironman te gana; en <b>Arcade</b> tienes que ganar a todos, como en la recreativa de 1989. Cuanto más difícil, más pagan las carreras. Sin créditos, se acaba la partida.</p>
+        <p>Los rivales pelean: si les sacas ventaja, conducen más afilados y te persiguen; si vas detrás, aflojan un poco. En Novato y Piloto además se adaptan a tu forma a lo largo del campeonato.</p>
+        <p>Las <b>flechas pintadas</b> en la pista marcan el sentido de la carrera, y la <b>línea de carrera</b> (Opciones) te muestra la trazada por delante de tu camión: verde para acelerar, ámbar para levantar el pie y roja para frenar.</p>
         <p><b>Dirección asistida</b> (Opciones): <i>suave</i> corrige el volante antes de chocar con las vallas y <i>fuerte</i> te lleva por la trazada y levanta el pie antes de las curvas. Ayuda mucho en el móvil, a cambio de un 10 % o un 20 % menos de premio.</p>
         <p>Al acabar cada carrera puedes ver la <b>REPETICIÓN</b> con cámaras de televisión: el realizador automático no se pierde los saltos (a cámara lenta), los adelantamientos ni la meta. Elige cámara, camión y velocidad, salta por la línea de tiempo, y con el <b>MODO FOTO</b> congela la imagen, gira la cámara y guarda o comparte la foto.</p>
         <p><b>Teclado:</b> ← → girar · ↑ acelerar · ↓ frenar/marcha atrás · ENTER o ESPACIO nitro · ESC pausa.<br>
@@ -1323,7 +1352,7 @@ export class Game {
         <p>Recoge <b style="color:#79c2ff">nitros</b> y <b class="gold">bolsas de dinero</b> en la pista. Con el dinero mejora tu camión en el taller: neumáticos, amortiguadores, aceleración y velocidad punta (5 niveles cada uno), o compra más nitro.</p>
         <p>Puedes correr con el <b>camión</b> (más agarre y velocidad punta, gana los empujones) o con el <b>buggy</b> del <i>Track Pak</i> (acelera más y aterriza mejor los saltos, pero es ligero y derrapa más).</p>
         <p>Hay 16 circuitos (los 8 de la recreativa y los 8 del <i>Track Pak</i>), cada uno en los dos sentidos. En <b>CARRERA LIBRE</b> puedes probar cualquiera, con el sentido y la luz que quieras.</p>
-        <p>En <b>CONTRARRELOJ</b> (Carrera libre → Modo) corres solo contra el <b>fantasma</b> de tu mejor tiempo en cada circuito. Pellizca la pista para acercar o alejar la cámara.</p>
+        <p>En <b>CONTRARRELOJ</b> (Carrera libre → Modo) corres contra el <b>fantasma</b> de tu mejor tiempo y el <b>fantasma dorado de Ironman</b>: gánale para la medalla de <b>oro</b>; a menos del 5 % es <b>plata</b> y a menos del 12 %, <b>bronce</b>. Pellizca la pista para acercar o alejar la cámara.</p>
         <p class="credits"><b>Créditos.</b> Remake de aficionado de <i>Ivan "Ironman" Stewart's Super Off Road</i> © 1989 Leland Corporation.
         Música: «Hotrock», «Exhilarate», «Cool Rock», «Ready Aim Fire», «Neolith» y «Twisted» de Kevin MacLeod (incompetech.com), licencia Creative Commons Atribución 4.0.
         Texturas de tierra: Poly Haven (CC0). Fuentes Russo One y Teko (SIL OFL). Locutor: Piper (voz en_US-ryan). Motor 3D: Three.js (MIT). Modelos 3D hechos con Blender.</p>

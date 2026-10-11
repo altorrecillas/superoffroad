@@ -7,6 +7,7 @@ import { h } from './ui.js';
 import { truckDef, TRUCKS } from '../game/drivers.js';
 import { fmtMoney } from '../game/session.js';
 import { ARENA } from '../sim/track.js';
+import { medalTimes, medalFor, medalRank, medalIcon, MEDALS, MEDAL_NAME } from '../game/medals.js';
 
 const ORD = ['', 'º', 'º', 'º', 'º'];
 const _v = new THREE.Vector3();
@@ -44,6 +45,7 @@ export class HUD {
         <div class="line" data-k="lapme">VUELTA 1/${race.laps}</div>
         <div class="line">MEJOR <b data-k="best">—</b></div>
         <div class="line gold">RÉCORD <b>${this.trial.rec ? fmtTime(this.trial.rec.t) : '—'}</b></div>
+        ${this._medalGoal()}
         <div class="line nitro">NITRO <b data-k="nitme">10</b></div>
       </div>` : solo && me ? `<div class="hud-me">
         <div class="pos" data-k="pos">1<sup>º</sup></div>
@@ -72,6 +74,15 @@ export class HUD {
       return { r, el: t, shown: null };
     });
     this.last = {};
+  }
+
+  // time trial: the next medal to win here (Ironman's run sets the times)
+  _medalGoal() {
+    const T = this.trial;
+    if (!T || !T.iron) return '';
+    const mt = medalTimes(T.iron.t);
+    const next = T.medal === 'gold' ? 'gold' : MEDALS[medalRank(T.medal) + 1];
+    return `<div class="line medal-line">${medalIcon(next)}${MEDAL_NAME[next]} <b>${fmtTime(mt[next])}</b>${T.medal === 'gold' ? ' ✓' : ''}</div>`;
   }
 
   set(k, v) {
@@ -148,7 +159,7 @@ export class HUD {
     if (this.map) {
       const show = world.camMode === 'zoom' || world.camMode === 'follow';
       if (show !== this.map.on) { this.map.on = show; this.map.c.style.display = show ? '' : 'none'; }
-      if (show) this._mapDraw(race, world.ghostState);
+      if (show) this._mapDraw(race, world.ghostState, world.ironState);
     }
     // closing time after the winner crosses the line
     const tl = race.timeLeft;
@@ -283,14 +294,16 @@ export class HUD {
     return { c, ctx: c.getContext('2d'), base, dpr, k, on: false };
   }
 
-  _mapDraw(race, ghost) {
+  _mapDraw(race, ghost, iron) {
     const m = this.map, g = m.ctx, k = m.k, dpr = m.dpr;
     g.clearRect(0, 0, m.c.width, m.c.height);
     g.drawImage(m.base, 0, 0);
-    if (ghost) { // time trial: where the record run is
+    // time trial: where the record run (blue) and Ironman's medal run (gold) are
+    for (const [st, col] of [[iron, '#ffd65a'], [ghost, '#cfe4ff']]) {
+      if (!st) continue;
       const s = 5.5 * dpr;
-      g.save(); g.translate((ghost.x - ARENA.x0) * k, (ghost.z - ARENA.z0) * k); g.rotate(ghost.h);
-      g.globalAlpha = 0.7; g.fillStyle = '#cfe4ff';
+      g.save(); g.translate((st.x - ARENA.x0) * k, (st.z - ARENA.z0) * k); g.rotate(st.h);
+      g.globalAlpha = 0.75; g.fillStyle = col;
       g.beginPath(); g.moveTo(s, 0); g.lineTo(-s * 0.7, s * 0.7); g.lineTo(-s * 0.3, 0); g.lineTo(-s * 0.7, -s * 0.7); g.closePath(); g.fill();
       g.restore();
     }
@@ -323,8 +336,9 @@ export class HUD {
   _finishBanner(r, place) {
     if (this.trial) {
       const rec = this.trial.rec, d = rec ? r.finishTime - rec.t : null;
-      const head = d == null ? 'PRIMER TIEMPO' : d < 0 ? '¡NUEVO RÉCORD!' : 'META';
-      this.ui.show('finish', `<div class="banner finish${d == null || d < 0 ? ' win' : ''}"><div class="race">${head}</div><div class="track">${fmtTime(r.finishTime)}</div>
+      const m = this.trial.iron ? medalFor(r.finishTime, this.trial.iron.t) : null;
+      const head = m ? `${medalIcon(m)}MEDALLA DE ${MEDAL_NAME[m]}` : d == null ? 'PRIMER TIEMPO' : d < 0 ? '¡NUEVO RÉCORD!' : 'META';
+      this.ui.show('finish', `<div class="banner finish${d == null || d < 0 || m === 'gold' ? ' win' : ''}"><div class="race">${head}</div><div class="track">${fmtTime(r.finishTime)}</div>
         <div class="sub">${d == null ? 'TU FANTASMA TE ESPERA EN LA PRÓXIMA' : (d < 0 ? '−' : '+') + Math.abs(d).toFixed(2) + ' S SOBRE EL RÉCORD'}</div></div>`, 'passive');
       clearTimeout(this._finT);
       this._finT = setTimeout(() => this.ui.hide('finish'), 3400);

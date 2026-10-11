@@ -1,5 +1,6 @@
-// Time trial flow: free race -> MODO CONTRARRELOJ -> run (autopilot) -> the run is
-// saved as a ghost -> OTRA VEZ -> the ghost races alongside -> results with the gap.
+// Time trial flow: free race -> MODO CONTRARRELOJ -> run (autopilot) with Ironman's
+// golden ghost and the medal goal in the HUD -> the run is saved as a ghost and earns
+// a medal -> OTRA VEZ -> both ghosts race alongside -> results with the gap.
 // Usage: GAME_ROOT=<dir> node flow_trial.mjs [outDir]
 import { chromium } from 'playwright';
 import http from 'http'; import fs from 'fs'; import path from 'path';
@@ -33,23 +34,27 @@ try {
   await page.click('#free [data-a=go]'); await page.waitForTimeout(400);
   await page.keyboard.press('Enter'); // red truck
   await waitState('intro'); await shot('1intro');
-  const first = await page.evaluate(() => { const g = window.__game; return { racers: g.race.racers.length, pickups: g.race.pickupsOn, laps: g.race.laps, ghost: !!g.world.ghost, panel: !!document.querySelector('#hud .hud-me.trial') }; });
+  const first = await page.evaluate(() => { const g = window.__game; return { racers: g.race.racers.length, pickups: g.race.pickupsOn, laps: g.race.laps, own: g.world.ghosts.some((x) => x.kind === 'me'), iron: g.world.ghosts.some((x) => x.kind === 'iron'), ironT: g.trial.iron && g.trial.iron.t, goal: document.querySelector('#hud .medal-line')?.textContent.trim(), panel: !!document.querySelector('#hud .hud-me.trial') }; });
   check(first.racers === 1 && !first.pickups, `alone on the track, no pickups (${first.racers} truck)`);
-  check(!first.ghost, 'no ghost the first time');
-  check(first.panel, 'the time trial panel is in the HUD');
+  check(!first.own, 'no ghost of your own the first time');
+  check(first.iron && first.ironT > 20, `Ironman's golden ghost races from the first run (${first.ironT && first.ironT.toFixed(2)} s)`);
+  check(first.panel && /BRONCE/.test(first.goal || ''), `the time trial panel shows the first medal to win (${first.goal})`);
   await waitState('results', 300000); await page.waitForTimeout(600); await shot('2results');
   const saved = await page.evaluate(() => { const all = JSON.parse(localStorage.getItem('sor.ghosts.v1') || '{}'); const k = Object.keys(all)[0]; return k ? { k, t: all[k].t, n: all[k].s.length / 4, laps: all[k].laps } : null; });
   check(saved && saved.n > 100 && saved.laps.length === 2, `the run is saved as a ghost (${saved && saved.k}: ${saved && saved.t.toFixed(2)} s, ${saved && saved.n} samples)`);
   const verdict1 = await page.evaluate(() => document.querySelector('#results .verdict').textContent.trim().replace(/\s+/g, ' '));
   console.log('       verdict 1:', verdict1);
+  const med = await page.evaluate(() => ({ rows: document.querySelectorAll('#results .medals .mt').length, stored: JSON.parse(localStorage.getItem('sor.medals.v1') || '{}') }));
+  const st = Object.values(med.stored)[0];
+  check(med.rows === 3 && (!st || ['gold', 'silver', 'bronze'].includes(st.m)), `the results show the three medal times${st ? ` and the medal is kept (${st.m})` : ''}`);
   // again, with the ghost
   await page.click('#results [data-a=again]');
   await waitState('intro', 60000);
-  const second = await page.evaluate(() => { const g = window.__game; return { ghost: !!g.world.ghost, rec: document.querySelector('#hud .hud-me.trial')?.textContent.replace(/\s+/g, ' ') }; });
-  check(second.ghost, 'the second run has the ghost');
+  const second = await page.evaluate(() => { const g = window.__game; return { own: g.world.ghosts.some((x) => x.kind === 'me'), iron: g.world.ghosts.some((x) => x.kind === 'iron') }; });
+  check(second.own && second.iron, 'the second run has your ghost and Ironman\'s');
   await waitState('race', 120000);
   let seen = false;
-  for (let k = 0; k < 40 && !seen; k++) { seen = await page.evaluate(() => { const g = window.__game; return !!(g.world.ghost && g.world.ghost.v.root.visible && g.race.time > 1); }); if (!seen) await page.waitForTimeout(500); }
+  for (let k = 0; k < 40 && !seen; k++) { seen = await page.evaluate(() => { const g = window.__game; const G = g.world.ghosts.find((x) => x.kind === 'me'); return !!(G && G.v.root.visible && g.race.time > 1); }); if (!seen) await page.waitForTimeout(500); }
   check(seen, 'the ghost drives during the race');
   await shot('3ghost');
   await waitState('results', 300000); await page.waitForTimeout(600); await shot('4results');

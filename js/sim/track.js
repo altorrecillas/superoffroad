@@ -713,6 +713,74 @@ const trackMethods = {
   },
 
   // starting grid: 2x2 behind the line
+  // Painted direction arrows: groups of three chevrons along the centre line, about
+  // every 30 m, that bend with the curve. Never in water, on ramps or bumps, on the
+  // grid and start line, or where another part of the track crosses (a group is put
+  // just before each crossing instead, to show the way over it).
+  arrowSpots(spacing = 30) {
+    const p = this.path, n = p.n, ds = p.ds;
+    const idx = (i) => ((i % n) + n) % n;
+    const GAP = Math.round(2.5 / ds); // between the chevrons of a group
+    // another stretch of track passes through here (a crossing)
+    const crossed = (x, z, i) => {
+      const far = Math.round((p.hw[i] * 2 + 16) / ds);
+      for (let j = 0; j < n; j += 2) {
+        let d = Math.abs(j - i); d = Math.min(d, n - d);
+        if (d < far) continue;
+        const r = p.hw[j] + 2.5;
+        if ((p.x[j] - x) ** 2 + (p.z[j] - z) ** 2 < r * r) return true;
+      }
+      return false;
+    };
+    // can a group centred on path index c be painted?
+    const fits = (c) => {
+      const s = c * ds;
+      if (s < 9 || s > this.L - 17) return false; // the start line and the grid
+      let hPrev = null;
+      for (let g = -1; g <= 1; g++) {
+        const i = idx(c + g * GAP);
+        const x = p.x[i], z = p.z[i];
+        for (const o of [-1.6, 0, 1.6]) { // across the chevron
+          const ax = x - p.tz[i] * o, az = z + p.tx[i] * o;
+          if (this.waterAt(ax, az) > 0.005 || this.sdfAt(ax, az) > -0.8) return false;
+        }
+        // flat enough: no ramps, crests or whoops under the paint
+        const h0 = this.heightAt(x - p.tx[i] * 1.2, z - p.tz[i] * 1.2), h1 = this.heightAt(x, z), h2 = this.heightAt(x + p.tx[i] * 1.2, z + p.tz[i] * 1.2);
+        if (Math.abs(h2 - h0) > 0.55 || Math.abs(h0 + h2 - 2 * h1) > 0.12) return false;
+        if (hPrev != null && Math.abs(h1 - hPrev) > 0.8) return false;
+        hPrev = h1;
+        if (crossed(x, z, i)) return false;
+      }
+      return true;
+    };
+    const groups = [];
+    const place = (c) => {
+      for (const o of [0, 3, -3, 6, -6, 9, -9]) {
+        const k = idx(c + Math.round(o / ds));
+        if (groups.some((g) => { let d = Math.abs(g - k); d = Math.min(d, n - d); return d * ds < spacing * 0.5; })) continue;
+        if (fits(k)) { groups.push(k); return true; }
+      }
+      return false;
+    };
+    // before every crossing first, then the regular spacing
+    let inX = crossed(p.x[0], p.z[0], 0);
+    for (let i = 2; i < n; i += 2) {
+      const now = crossed(p.x[i], p.z[i], i);
+      if (now && !inX) place(idx(i - Math.round(6 / ds) - GAP));
+      inX = now;
+    }
+    const step = Math.round(spacing / ds);
+    for (let c = Math.round(16 / ds); c < n; c += step) place(c);
+    groups.sort((a, b) => a - b);
+    // one entry per chevron: position and direction of travel
+    const out = [];
+    for (const c of groups) for (let g = -1; g <= 1; g++) {
+      const i = idx(c + g * GAP);
+      out.push({ x: p.x[i], z: p.z[i], tx: p.tx[i], tz: p.tz[i], i });
+    }
+    return out;
+  },
+
   computeGrid() {
     const p = this.path;
     const slots = [];

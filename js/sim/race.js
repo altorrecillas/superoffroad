@@ -19,6 +19,7 @@ export class Race {
     // catch-up (the arcade's DPA): ease off when ahead of the player / push when behind
     this.dpaDown = opts.dpaDown ?? opts.dpa ?? 0.07;
     this.dpaUp = opts.dpaUp ?? opts.dpa ?? 0.07;
+    this.catchUp = opts.catchUp ?? 0;  // how much sharper a CPU driver gets behind the player (0..1)
     this.state = 'countdown';
     this.time = -COUNTDOWN;   // race clock (negative during the countdown)
     this.events = [];
@@ -148,16 +149,28 @@ export class Race {
     r.wrongWay = ww;
   }
 
+  // Catch-up, both ways: a CPU truck ahead of the best player eases off (its driver
+  // aims for lower speeds), one behind gets more engine (real acceleration and top
+  // speed, so it gains on the straights without taking the corners any faster)
   _dpa(dt) {
     const humans = this.racers.filter((r) => r.human && !r.finished);
-    if (!humans.length) { for (const r of this.racers) if (r.ai) r.ai.dpa += (1 - r.ai.dpa) * dt; return; }
+    const k = Math.min(1, dt * 0.5);
+    if (!humans.length) {
+      for (const r of this.racers) if (r.ai) { r.ai.dpa += (1 - r.ai.dpa) * dt; r.ai.push += (0 - r.ai.push) * dt; r.truck.power += (1 - r.truck.power) * dt; }
+      return;
+    }
     const best = Math.max(...humans.map((h) => h.prog));
     for (const r of this.racers) {
       if (!r.ai || r.human) continue;
       const gap = r.prog - best; // + ahead of the best human
       const sc = r.entry.ai?.dpaScale ?? 1;
-      const target = gap > 0 ? 1 - Math.min(1, gap / 70) * this.dpaDown * sc : 1 + Math.min(1, -gap / 70) * this.dpaUp * sc;
-      r.ai.dpa += (target - r.ai.dpa) * Math.min(1, dt * 0.5);
+      // a short lead (under 15 m) is the player's to defend; beyond it the CPU fights back
+      const behind = gap < -15 ? Math.min(1, (-gap - 15) / 40) : 0;
+      const down = gap > 0 ? 1 - Math.min(1, gap / 35) * this.dpaDown * sc : 1;
+      r.ai.dpa += (down - r.ai.dpa) * k;
+      // the waiting is per driver (Ironman waits less), the fighting back is for everyone
+      r.ai.push += (behind * this.catchUp - r.ai.push) * k;
+      r.truck.power += (1 + behind * this.dpaUp - r.truck.power) * k;
     }
   }
 

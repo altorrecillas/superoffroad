@@ -111,6 +111,7 @@ export function buildTerrain(track, opts = {}) {
 
   const marks = new MarksLayer(track, opts.marksSize ?? 2048);
   const noiseRT = opts.renderer ? bakeNoise(opts.renderer, x0, z0, W, D) : null;
+  const arrowTex = arrowMask(track, x0, z0, W, D, opts.arrowRes ?? 8);
 
   const uniforms = {
     tNormalAO: { value: normalTex },
@@ -132,6 +133,7 @@ export function buildTerrain(track, opts = {}) {
     uTrackLen: { value: track.L },
     uStart: { value: new THREE.Vector4(track.startLine.x, track.startLine.z, track.startLine.tx, track.startLine.tz) },
     uStartHW: { value: track.startLine.hw },
+    tArrows: { value: arrowTex },
     // Volcano Valley: centre x/z, radius, rim fraction; lava glow (night 1, day ~0.3)
     uVolc: { value: opts.volcano ? new THREE.Vector4(opts.volcano.x, opts.volcano.z, opts.volcano.r, opts.volcano.rim ?? 0.2) : new THREE.Vector4() },
     uVolcOn: { value: opts.volcano ? 1 : 0 },
@@ -153,13 +155,46 @@ export function buildTerrain(track, opts = {}) {
       .replace('#include <aomap_fragment>', TERRAIN_AO)
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += tEmit;');
   };
-  mat.customProgramCacheKey = () => 'terrain-v4';
+  mat.customProgramCacheKey = () => 'terrain-v5';
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.name = 'terrain';
-  mesh.userData = { marks, uniforms, normalTex, fieldTex, wetTex, noiseRT };
+  mesh.userData = { marks, uniforms, normalTex, fieldTex, wetTex, noiseRT, arrowTex };
   return mesh;
+}
+
+// The direction arrows (track.arrowSpots) drawn into a mask over the whole arena; the
+// ground shader paints them, so they follow the terrain, take its light and get worn
+// by the tyres like the start line.
+function arrowMask(track, x0, z0, W, D, res) {
+  const cw = Math.round(W * res), ch = Math.round(D * res);
+  const c = document.createElement('canvas');
+  c.width = cw; c.height = ch;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, cw, ch);
+  g.strokeStyle = '#fff';
+  for (const a of track.arrowSpots()) {
+    g.save();
+    g.translate((a.x - x0) * res, (a.z - z0) * res);
+    g.rotate(Math.atan2(a.tz, a.tx));
+    g.scale(res, res);
+    // a sharp chevron pointing the way (+x here): 2.4 m across, 0.55 m thick arms
+    g.lineWidth = 0.55;
+    g.lineJoin = 'miter';
+    g.lineCap = 'butt';
+    g.beginPath();
+    g.moveTo(-0.75, -1.2); g.lineTo(0.62, 0); g.lineTo(-0.75, 1.2);
+    g.stroke();
+    g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = false; // canvas row 0 = the arena's z0, like the shader's arena coordinates
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = 4;
+  return tex;
 }
 
 const NOISE_GLSL = /* glsl */ `
@@ -209,6 +244,7 @@ uniform vec2 uGridN;
 uniform float uTrackLen;
 uniform vec4 uStart;
 uniform float uStartHW;
+uniform sampler2D tArrows;
 uniform vec4 uVolc;
 uniform float uVolcOn, uLava, uTime;
 varying vec3 vWPos;
@@ -309,6 +345,14 @@ const TERRAIN_COLOR = /* glsl */ `
   // tyre marks: compacted darker dirt
   col = mix(col, col * vec3(0.62, 0.57, 0.53), clamp(mk.r, 0.0, 1.0) * 0.8);
 
+  // direction arrows painted on the track, worn by the tyres
+  {
+    float ar = texture2D(tArrows, auv).r;
+    if (ar > 0.004) {
+      float worn = smoothstep(0.35, 0.9, tn(wp * 2.1) * 0.7 + cT.r * 0.55 + mk.r * 0.6);
+      col = mix(col, vec3(0.84, 0.81, 0.74), ar * (1.0 - worn * 0.6) * 0.82);
+    }
+  }
   // start / finish line: checkered paint across the track at s = 0
   {
     vec2 d = wp - uStart.xy;

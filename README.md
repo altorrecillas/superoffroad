@@ -71,14 +71,27 @@ Al elegir 1, 2 o 3 jugadores se elige la dificultad del campeonato con cuatro fi
 
 | Nivel | Los rivales | Pierdes un crédito | Premios |
 |---|---|---|---|
-| **Novato** | te esperan mucho y fallan a menudo | si llegas el último | ×0,75 |
-| **Piloto** (recomendado) | la experiencia clásica: te plantan cara y mejoran carrera a carrera | si Ironman te gana | ×1 |
-| **Experto** | afilados: casi no fallan, apenas te esperan y guardan nitro para la última vuelta | si Ironman te gana | ×1,25 |
-| **Arcade** | las reglas de la recreativa de 1989: nadie te espera | si cualquier rival te gana | ×1,5 |
+| **Novato** | te esperan y fallan a menudo | si llegas el último | ×0,75 |
+| **Piloto** (recomendado) | la experiencia clásica: te plantan cara y se adaptan a tu ritmo | si Ironman te gana | ×1 |
+| **Experto** | afilados: casi no fallan, aprietan y guardan nitro para la última vuelta | si Ironman te gana | ×1,25 |
+| **Arcade** | las reglas de la recreativa de 1989: implacables | si cualquier rival te gana | ×1,5 |
 
-Cada nivel cambia de verdad cómo conducen los rivales, no solo su velocidad: cuánto levantan el pie cuando van por delante de ti y cuánto aprietan cuando van por detrás (el ajuste dinámico del original, ahora distinto en cada sentido), cuántos errores cometen (frenar tarde y abrirse en una curva, dudar con el gas), cuánto nitro reservan para la última vuelta (donde además arriesgan un poco más) y hasta dónde mejoran a lo largo del campeonato. Los premios y las bolsas se multiplican según el nivel, y la puntuación con ellos.
+Cada nivel cambia de verdad cómo conducen los rivales, no solo su velocidad:
 
-Está calibrado con campeonatos simulados de 16 carreras contra un piloto de teclado de tres niveles de habilidad: un jugador medio gana casi todas en Novato sin perder créditos, unas 10 en Piloto perdiendo unos 4, unas 6 en Experto perdiendo unos 8 y unas 5 en Arcade perdiendo más de 10; uno bueno gana 14 en Piloto y aun así pierde varios créditos en Arcade (`tools/test/season.mjs`).
+- **Pelean en las dos direcciones.** Un camión de la CPU que va por delante de ti levanta el pie (el ajuste dinámico del original). Uno al que le sacas más de 15 m conduce como un piloto mejor (frena más tarde, entra más rápido en las curvas, comete menos errores) y su motor rinde algo más. Una ventaja corta ganada a pulso se puede defender; una escapada se paga.
+- **Su ritmo** desde la primera carrera y cuánto mejoran a lo largo del campeonato, los **errores** que cometen (frenar tarde y abrirse, dudar con el gas) y el **nitro** que guardan para la última vuelta.
+- **En Novato y Piloto se adaptan a tu forma:** si ganas por mucho carrera tras carrera, los rivales se afilan; si pierdes por mucho, aflojan un poco. Las llegadas apretadas no cambian nada. Experto y Arcade son un reto fijo.
+
+Los premios y las bolsas se multiplican según el nivel, y la puntuación con ellos.
+
+Está calibrado con campeonatos simulados (`tools/test/difficulty.mjs`, 36 carreras por casilla) contra cuatro tipos de piloto, midiendo no solo quién gana sino **por cuánto**:
+
+| Nivel | Bueno (teclado) | Medio (teclado) | Táctil con dirección asistida suave |
+|---|---|---|---|
+| Novato | gana todas, por ~5 s | gana el 94 % | gana el 78 % |
+| Piloto | gana el 81 %, por ~1,7 s; la mitad de las llegadas por menos de 1,5 s | gana el 39 %; el 78 % de las llegadas por menos de 1,5 s | gana el 19 %; casi todas las llegadas apretadas |
+| Experto | gana el 64 %, por ~1 s | gana el 19 % | — |
+| Arcade | gana el 36 % | gana el 3 % | — |
 
 Si un nivel se te queda corto (varias victorias seguidas) o grande (créditos perdidos carrera tras carrera), los resultados te sugieren cuál probar en la próxima partida.
 
@@ -90,6 +103,12 @@ En **Opciones → DIRECCIÓN ASISTIDA** (viene en *suave* en el móvil y desacti
 - **Fuerte**: sin tocar el giro el camión sigue la trazada, levanta el pie antes de las curvas que no pasaría y te aparta con más fuerza de las vallas.
 
 Siempre manda el jugador: si giras para alejarte de la valla, o más fuerte en la buena dirección, la ayuda no te frena. Como en los juegos de carreras actuales, ayudar tiene un precio: los premios bajan un 10 % (suave) o un 20 % (fuerte) en las carreras en las que se usa. Con un jugador simulado torpe en pantalla táctil (reacciones tardías, el pulgar que se escapa del botón), la ayuda suave reduce los choques a menos de la mitad y la fuerte casi los elimina (`tools/test/assist.mjs`).
+
+### Flechas en la pista y línea de carrera
+
+Todos los circuitos llevan **flechas pintadas en el suelo** (grupos de tres chevrones en el centro del carril) que marcan el sentido de la carrera: se dan la vuelta en sentido inverso, hay una justo antes de cada cruce para indicar por dónde seguir, y nunca caen en charcos, rampas, baches ni en la parrilla. Están pintadas en el propio suelo, así que siguen el relieve, se ven igual de día y de noche y las rodadas las van desgastando durante la carrera.
+
+La **línea de carrera** (Opciones → LÍNEA DE CARRERA, activada por defecto) dibuja chevrones sobre la trazada por delante de tu camión, como en los juegos de carreras actuales: **verde** donde puedes seguir acelerando, **ámbar** donde conviene levantar el pie y **roja** donde hay que frenar, según tu velocidad y la que admite cada curva con tu camión. Con varios jugadores en la misma pantalla no se muestra.
 
 ### Repetición con cámaras de televisión
 
@@ -116,7 +135,9 @@ Con el mismo piloto los dos tardan casi lo mismo en el total de los 32 circuitos
 
 ### Contrarreloj con fantasma
 
-En **CARRERA LIBRE → MODO: CONTRARRELOJ** corres solo, sin objetos en la pista, 3 vueltas. El juego graba tu recorrido y, la próxima vez que corras en ese circuito y sentido, un **fantasma** transparente de tu mejor tiempo corre contigo (también aparece en el minimapa). Al cerrar cada vuelta ves cuánto le sacas o te saca (en verde si vas por delante) y al final, tus vueltas, el tiempo total y si has batido el récord. Las tarjetas de los circuitos muestran tu récord en cada uno.
+En **CARRERA LIBRE → MODO: CONTRARRELOJ** corres solo, sin objetos en la pista, 3 vueltas. El juego graba tu recorrido y, la próxima vez que corras en ese circuito y sentido, un **fantasma** transparente de tu mejor tiempo corre contigo (también aparece en el minimapa). Al cerrar cada vuelta ves cuánto le sacas o te saca (en verde si vas por delante) y al final, tus vueltas, el tiempo total y si has batido el récord.
+
+**Medallas.** En cada circuito y sentido, Ironman marca un tiempo con tu mismo vehículo y el mismo nivel de taller, y su **fantasma dorado** corre contigo desde la primera vez. **Oro** si le ganas; **plata** si quedas a menos del 5 % y **bronce** a menos del 12 %. El marcador muestra la siguiente medalla que te falta, la meta y los resultados la que has ganado y cuánto te faltó para la siguiente, y las tarjetas de los circuitos la mejor medalla y tu récord en cada uno. El tiempo de Ironman es una simulación determinista, el mismo en cualquier dispositivo; está calibrado para que un buen jugador saque oros y uno casual, bronces.
 
 ### El taller de Ironman
 
@@ -157,7 +178,7 @@ Los **ocho circuitos de la recreativa** y los **ocho del *Track Pak*** (la ampli
 
 ### Opciones
 
-Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**Clásica** como el arcade, **Dinámica** —misma vista pero más cerca, la que viene en el móvil— y **Persecución**; con estas dos aparece un minimapa del circuito), volumen de música y efectos, locutor, vibración (en el mando y en los móviles Android: golpes, aterrizajes duros y nitro), control táctil, **dirección asistida**, acelerador automático y contador de FPS. Las opciones, los récords de puntuación y los de vuelta se guardan en el navegador.
+Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**Clásica** como el arcade, **Dinámica** —misma vista pero más cerca, la que viene en el móvil— y **Persecución**; con estas dos aparece un minimapa del circuito), volumen de música y efectos, locutor, vibración (en el mando y en los móviles Android: golpes, aterrizajes duros y nitro), control táctil, **dirección asistida**, **línea de carrera**, acelerador automático y contador de FPS. Las opciones, los récords de puntuación y los de vuelta se guardan en el navegador.
 
 ## Cómo está hecho
 
@@ -167,7 +188,7 @@ Calidad gráfica (Auto/Baja/Media/Alta, con resolución dinámica), cámara (**C
 - `tools/blender/truck.py` construye el camión en **Blender 5.2** por script (carrocería, jaula, amortiguadores, barra de luces, ruedas con tacos y llantas *beadlock*, más una rueda de bajo detalle para la vista lejana), hornea la oclusión ambiental y exporta `assets/models/truck.glb`. `tools/blender/buggy.py` hace lo mismo con el buggy (morro de fibra, jaula tubular con techo, motor bóxer con escape, ruedas delanteras estrechas y traseras anchas). Los modelos se exportan con compresión *meshopt* (el decodificador va en `vendor/three/addons/libs/`). `tools/blender/props.py` hace el resto del atrezo (banderillero articulado, torre de salida, bidones gigantes, balas de paja, neumáticos, columnas de roca, lagartos gigantes, botella de nitro y saco de dinero). `tools/blender/logo.py` y `icon.py` renderizan el logotipo y el icono con Cycles.
 - Repeticiones (`js/game/replay.js`, `director.js`, `replayview.js`): la entrada de cada jugador se redondea a lo que se guarda *antes* de que la simulación la use, así que lo grabado es exactamente lo que se corrió; la repetición es una simulación nueva con la misma semilla, los mismos coches y esas entradas. El realizador lee las notas de la grabación (saltos con su tiempo de vuelo, adelantamientos, choques, llegadas) y programa los planos y la cámara lenta. Las cámaras de pie de pista y lateral comprueban que no haya terreno ni vallas entre ellas y el camión. La dirección asistida (`js/sim/assist.js`) es una IA que no adelanta ni esquiva, solo aconseja la trazada, mezclada con lo que pulsa el jugador.
 - Robustez en el móvil: si el teléfono gira a vertical, se cambia de aplicación o el sistema recupera la memoria gráfica (pérdida del contexto WebGL), la carrera se pausa y el juego se recupera solo; la música usa un único reproductor para que el iPhone la deje cambiar de pista sin pedir otro toque.
-- `tools/test/`: pruebas sin navegador (`simrace.mjs` corre carreras de la IA en los 16 circuitos, `season.mjs` juega un campeonato entero con las reglas reales contra un jugador simulado, `fuzz.mjs` somete la física a pilotos con mandos aleatorios, `vehiclebalance.mjs` compara camión y buggy con el mismo piloto, `simviz.mjs` dibuja trayectorias y choques, `keyboarddriver.mjs` simula a un jugador con teclado, `assist.mjs` mide la dirección asistida con un jugador torpe de pantalla táctil, `replaysim.mjs` comprueba que una repetición reproduce la carrera paso a paso, bit a bit), capturas (`shot.mjs`), un repaso visual de todas las pantallas a cualquier tamaño o modelo de móvil que avisa si algo no cabe o si un texto se sale de su botón (`screens.mjs`), pruebas del iPhone con el motor de Safari (`ios.mjs`: pellizco bloqueado en la página, zoom de cámara, aviso de pantalla de inicio, muesca), de girar el móvil y cambiar de aplicación (`rotate.mjs`) y de pérdida de la memoria gráfica (`ctxloss.mjs`), pruebas del flujo completo (`flow*.mjs`, incluida la contrarreloj con fantasma y `flow_replay.mjs`: una carrera conducida con teclas reales y la asistencia puesta, su repetición a ×4 que debe acabar con los mismos tiempos, el salto atrás, el modo foto y la vuelta a los resultados, en Chrome y en el motor de Safari), del modo sin conexión e instalable (`offline.mjs`), del botón atrás, el mando para zurdos y el efecto del nitro (`extras.mjs`), un «mono» que pulsa teclas al azar por todos los menús (`monkey.mjs`) y una prueba de fugas de memoria (`leak.mjs`).
+- `tools/test/`: pruebas sin navegador (`simrace.mjs` corre carreras de la IA en los 16 circuitos, `season.mjs` juega un campeonato entero con las reglas reales contra un jugador simulado, `fuzz.mjs` somete la física a pilotos con mandos aleatorios, `vehiclebalance.mjs` compara camión y buggy con el mismo piloto, `simviz.mjs` dibuja trayectorias y choques, `keyboarddriver.mjs` simula a un jugador con teclado, `assist.mjs` mide la dirección asistida con un jugador torpe de pantalla táctil, `replaysim.mjs` comprueba que una repetición reproduce la carrera paso a paso, bit a bit, y `difficulty.mjs` mide para cada nivel y tipo de jugador las victorias, los créditos perdidos y las distancias en meta), capturas (`shot.mjs`), un repaso visual de todas las pantallas a cualquier tamaño o modelo de móvil que avisa si algo no cabe o si un texto se sale de su botón (`screens.mjs`), pruebas del iPhone con el motor de Safari (`ios.mjs`: pellizco bloqueado en la página, zoom de cámara, aviso de pantalla de inicio, muesca), de girar el móvil y cambiar de aplicación (`rotate.mjs`) y de pérdida de la memoria gráfica (`ctxloss.mjs`), pruebas del flujo completo (`flow*.mjs`, incluida la contrarreloj con fantasma y `flow_replay.mjs`: una carrera conducida con teclas reales y la asistencia puesta, su repetición a ×4 que debe acabar con los mismos tiempos, el salto atrás, el modo foto y la vuelta a los resultados, en Chrome y en el motor de Safari), del modo sin conexión e instalable (`offline.mjs`), del botón atrás, el mando para zurdos y el efecto del nitro (`extras.mjs`), un «mono» que pulsa teclas al azar por todos los menús (`monkey.mjs`) y una prueba de fugas de memoria (`leak.mjs`).
 
 ## Créditos y licencias
 

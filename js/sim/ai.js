@@ -23,6 +23,7 @@ export class AIDriver {
     this.assist = !!opts.assist;     // advice for a human (steering assist): no dodging, no reversing
     this.errT = 0; this.errKind = 0; this.errCd = 5 + this.r() * 6;
     this.lastLap = false;           // set by the race
+    this.push = 0;                  // set by the race: 0..1, a truck behind the player drives sharper
     this.inp = { steer: 0, throttle: 0, brake: 0, nitro: false };
     this.rebuildProfile();
   }
@@ -30,6 +31,15 @@ export class AIDriver {
   rebuildProfile() {
     const st = this.t.stats;
     this.profile = this.track.speedProfile(st.grip * (0.74 + 0.1 * this.skill), 10 + 3 * this.skill, st.vmax);
+    this.profileUp = null;
+  }
+  // the speeds of a sharper driver, for the catch-up (built the first time it is needed)
+  _profileUp() {
+    if (!this.profileUp) {
+      const st = this.t.stats, sk = Math.min(1.15, this.skill + 0.3);
+      this.profileUp = this.track.speedProfile(st.grip * (0.74 + 0.1 * sk), 10 + 3 * sk, st.vmax);
+    }
+    return this.profileUp;
   }
 
   _lineIndex() {
@@ -114,16 +124,23 @@ export class AIDriver {
     const err = wrapAngle(desired - t.h);
     let steer = clamp(err * 2.8 - t.w * 0.2, -1, 1);
 
-    // speed control from the profile
-    const mul = (0.84 + 0.16 * this.skill) * this.dpa;
+    // speed control from the profile; behind the player (push) it drives like a sharper
+    // driver: later braking, faster corners
+    const push = this.push;
+    const mul = (0.84 + 0.16 * Math.min(1.15, this.skill + push * 0.3)) * this.dpa;
+    const P = this.profile, PU = push > 0.01 ? this._profileUp() : null;
     let vt = Infinity;
-    for (let o = 0; o <= 3; o++) vt = Math.min(vt, this.profile[(k + o) % ln.m]);
-    vt *= mul * (this.lastLap ? 1 + 0.012 * this.skill : 1); // a little push on the last lap
+    for (let o = 0; o <= 3; o++) {
+      const kk = (k + o) % ln.m;
+      vt = Math.min(vt, PU ? P[kk] + (PU[kk] - P[kk]) * push : P[kk]);
+    }
+    // a little push on the last lap; on the straights, the engine the catch-up gives
+    vt *= mul * (this.lastLap ? 1 + 0.012 * this.skill : 1) * (vt >= t.stats.vmax * 0.97 ? t.power : 1);
 
     // human mistakes (lower levels): braking late into a corner and running wide, or a
     // moment of hesitation on the throttle
     if (this.errT > 0) this.errT -= dt;
-    else if (this.mistakes > 0 && (this.errCd -= dt) <= 0 && speed > 8 && !t.air) {
+    else if (this.mistakes > 0 && (this.errCd -= dt * (1 - 0.7 * push)) <= 0 && speed > 8 && !t.air) {
       this.errCd = (7 + this.r() * 9) / this.mistakes;
       let corner = false;
       for (let o = 4; o < 22; o++) if (this.profile[(k + o) % ln.m] < t.stats.vmax * 0.7) { corner = true; break; }

@@ -69,6 +69,28 @@ function playerRing(color) {
   return m;
 }
 
+// The racing line (option LÍNEA DE CARRERA): chevrons on the ground along the line
+// ahead of the player, green where the truck can keep its speed, amber where it should
+// lift and red where it has to brake, from the jump-aware speed profile of its own
+// truck (like the driving line of modern racing games). It also shows the way.
+const GUIDE_N = 15;           // chevrons, one every two line points (~4 m)
+const G_GREEN = new THREE.Color(0.12, 0.95, 0.25), G_AMBER = new THREE.Color(1, 0.62, 0.05), G_RED = new THREE.Color(1, 0.09, 0.05);
+const _gc = new THREE.Color(), _gm = new THREE.Matrix4(), _gp = new THREE.Vector3(), _gq = new THREE.Quaternion(), _gy = new THREE.Quaternion(), _g1 = new THREE.Vector3(1, 1, 1);
+let _guideTex = null;
+function guideTexture() {
+  if (_guideTex) return _guideTex;
+  const S = 128, c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff';
+  g.beginPath(); // a chevron pointing to the top of the texture
+  g.moveTo(S * 0.5, S * 0.06); g.lineTo(S * 0.97, S * 0.6); g.lineTo(S * 0.97, S * 0.94);
+  g.lineTo(S * 0.5, S * 0.42); g.lineTo(S * 0.03, S * 0.94); g.lineTo(S * 0.03, S * 0.6);
+  g.closePath(); g.fill();
+  _guideTex = new THREE.CanvasTexture(c);
+  return _guideTex;
+}
+
 export class RaceWorld {
   constructor(view) {
     this.view = view;
@@ -164,6 +186,7 @@ export class RaceWorld {
       u.marks.dispose();
       u.normalTex.dispose(); u.fieldTex.dispose(); u.wetTex.dispose();
       if (u.noiseRT) u.noiseRT.dispose();
+      if (u.arrowTex) u.arrowTex.dispose();
     }
     this.terrain = this.barriers = this.water = this.props = null;
   }
@@ -194,6 +217,7 @@ export class RaceWorld {
     this.fx.clear();
     this.pickups.clear();
     this.leader = 0;
+    if (this.guide) this.setGuide(-1); // the game turns it on for the player's races
   }
 
   // the same field in a new simulation (a replay going back): keep the truck models
@@ -205,47 +229,136 @@ export class RaceWorld {
   }
   showRings(on) { for (const m of this.rings || []) if (m) m.visible = on; }
 
-  // time trial ghost: the recorded best run, a see-through copy of its truck
-  setGhost(g) {
-    if (this.ghost) {
-      this.scene.remove(this.ghost.v.root);
-      this.ghost.v.dispose();
-      for (const m of this.ghost.mats) m.dispose();
-      this.ghost = null;
+  // the racing line for racer `index` (-1: none)
+  setGuide(index) {
+    let G = this.guide;
+    if (!G) {
+      const geo = new THREE.PlaneGeometry(1.7, 1.15);
+      geo.rotateX(-Math.PI / 2); // flat on the ground, tip towards -z
+      const col = new THREE.InstancedBufferAttribute(new Float32Array(GUIDE_N * 4), 4);
+      geo.setAttribute('aCol', col);
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { map: { value: guideTexture() } },
+        vertexShader: `attribute vec4 aCol; varying vec4 vCol; varying vec2 vUv;
+          void main(){ vUv = uv; vCol = aCol;
+            vec4 p = vec4(position, 1.0);
+            #ifdef USE_INSTANCING
+            p = instanceMatrix * p;
+            #endif
+            gl_Position = projectionMatrix * viewMatrix * modelMatrix * p; }`,
+        fragmentShader: `uniform sampler2D map; varying vec4 vCol; varying vec2 vUv;
+          void main(){ float a = texture2D(map, vUv).a * vCol.a; if (a < 0.02) discard;
+            gl_FragColor = vec4(vCol.rgb, a);
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+          }`,
+        transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, GUIDE_N);
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 3;
+      mesh.visible = false;
+      this.scene.add(mesh);
+      G = this.guide = { mesh, col, index: -1, profile: null };
     }
+    G.index = index;
+    G.profile = null;
+    G.mesh.visible = false;
+    if (index >= 0 && this.race && this.track && this.race.racers[index]) {
+      const st = this.race.racers[index].truck.stats;
+      // a good driver's speeds for this truck (the profile the CPU uses at skill 0.9)
+      G.profile = this.track.speedProfile(st.grip * 0.83, 12.7, st.vmax);
+    }
+  }
+
+  _updateGuide() {
+    const G = this.guide, race = this.race;
+    if (!G) return;
+    const r = G.profile && race && race.racers[G.index];
+    if (!r || r.finished || race.state === 'done') { G.mesh.visible = false; return; }
+    const tr = this.track, ln = tr.line, m = ln.m, t = r.truck;
+    const stride = ln.idx[1] - ln.idx[0] || 4;
+    // where the truck is on the line, from the race's own progress tracking (it knows
+    // which branch of a crossing the truck is on)
+    const k0 = Math.floor(r.idx / stride) % m;
+    const first = (k0 + 2 + (k0 % 2)) % m; // even points only: the chevrons stay put on the ground
+    const v = Math.max(0, t.vf), reach = GUIDE_N * 4;
+    for (let n = 0; n < GUIDE_N; n++) {
+      const k = (first + n * 2) % m;
+      const x = ln.x[k], z = ln.z[k];
+      const a = (k - 1 + m) % m, b = (k + 1) % m;
+      let dx = ln.x[b] - ln.x[a], dz = ln.z[b] - ln.z[a];
+      const l = Math.hypot(dx, dz) || 1;
+      dx /= l; dz /= l;
+      tr.normalAt(x, z, _n);
+      _nv.set(_n[0], _n[1], _n[2]).normalize();
+      _gq.setFromUnitVectors(_up, _nv).multiply(_gy.setFromAxisAngle(_up, Math.atan2(-dx, -dz)));
+      _gp.set(x, tr.heightAt(x, z) + 0.06, z);
+      _gm.compose(_gp, _gq, _g1);
+      G.mesh.setMatrixAt(n, _gm);
+      // braking needed to be at the line's speed when getting there (m/s²)
+      const d = Math.hypot(x - t.x, z - t.z), vp = G.profile[k];
+      const need = v > vp ? (v * v - vp * vp) / (2 * Math.max(2, d)) : 0;
+      const q = Math.min(1, need / 9);
+      if (q < 0.5) _gc.copy(G_GREEN).lerp(G_AMBER, q * 2); else _gc.copy(G_AMBER).lerp(G_RED, (q - 0.5) * 2);
+      const alpha = Math.min(1, Math.max(0, (d - 3) / 5)) * Math.min(1, Math.max(0, (reach - d) / 12)) * 0.86;
+      G.col.setXYZW(n, _gc.r, _gc.g, _gc.b, alpha);
+    }
+    G.mesh.instanceMatrix.needsUpdate = true;
+    G.col.needsUpdate = true;
+    G.mesh.visible = true;
+  }
+
+  // time trial ghost: the recorded best run, a see-through copy of its truck
+  // Time trial ghosts: see-through copies of recorded runs, the player's best (a cold
+  // blue glow) and Ironman's medal run (a golden one). list: [{ g, kind: 'me' | 'iron' }]
+  setGhost(g) { this.setGhosts(g ? [{ g, kind: 'me' }] : []); }
+  setGhosts(list) {
+    for (const G of this.ghosts || []) {
+      this.scene.remove(G.v.root);
+      G.v.dispose();
+      for (const m of G.mats) m.dispose();
+    }
+    this.ghosts = [];
     this.ghostState = null;
-    if (!g) return;
-    const d = truckDef(g.c) || truckDef('red');
-    const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet }, this.templates[g.v] || this.template);
-    const mats = [], seen = new Map();
-    v.root.traverse((o) => {
-      if (!o.isMesh) return;
-      o.castShadow = false; o.receiveShadow = false;
-      o.renderOrder = 5;
-      const ghostly = (m) => {
-        if (seen.has(m)) return seen.get(m);
-        const c = m.clone();
-        c.transparent = true; c.opacity = 0.36; c.depthWrite = false;
-        if (c.emissive) { c.emissive.setRGB(0.12, 0.2, 0.32); c.emissiveIntensity = 1; } // a cold glow so it reads as a ghost
-        seen.set(m, c); mats.push(c);
-        return c;
-      };
-      o.material = Array.isArray(o.material) ? o.material.map(ghostly) : ghostly(o.material);
-    });
-    v.root.visible = false;
-    this.scene.add(v.root);
-    this.ghost = { g, v, mats, st: { x: 0, y: 0, z: 0, h: 0, vf: 0, w: 0, vy: 0, air: false, steer: 0, landKick: 0 } };
+    this.ironState = null;
+    for (const { g, kind } of list) {
+      if (!g) continue;
+      const d = truckDef(g.c) || truckDef('red');
+      const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet }, this.templates[g.v] || this.template);
+      const mats = [], seen = new Map();
+      const glow = kind === 'iron' ? [0.42, 0.3, 0.04] : [0.12, 0.2, 0.32];
+      v.root.traverse((o) => {
+        if (!o.isMesh) return;
+        o.castShadow = false; o.receiveShadow = false;
+        o.renderOrder = 5;
+        const ghostly = (m) => {
+          if (seen.has(m)) return seen.get(m);
+          const c = m.clone();
+          c.transparent = true; c.opacity = kind === 'iron' ? 0.32 : 0.36; c.depthWrite = false;
+          if (c.emissive) { c.emissive.setRGB(glow[0], glow[1], glow[2]); c.emissiveIntensity = 1; } // a glow so it reads as a ghost
+          seen.set(m, c); mats.push(c);
+          return c;
+        };
+        o.material = Array.isArray(o.material) ? o.material.map(ghostly) : ghostly(o.material);
+      });
+      v.root.visible = false;
+      this.scene.add(v.root);
+      this.ghosts.push({ g, kind, v, mats, st: { x: 0, y: 0, z: 0, h: 0, vf: 0, w: 0, vy: 0, air: false, steer: 0, landKick: 0 } });
+    }
   }
 
   _updateGhost(dt) {
-    const G = this.ghost, race = this.race;
-    if (!G || !race) return;
-    const st = race.state === 'race' || race.state === 'done' ? ghostAt(G.g, race.time, G.st) : null;
-    G.v.root.visible = !!st;
-    this.ghostState = st;
-    if (!st) return;
-    st.air = st.y - this.track.heightAt(st.x, st.z) > 0.3;
-    G.v.update(st, dt, this.track);
+    const race = this.race;
+    if (!race || !this.ghosts) return;
+    for (const G of this.ghosts) {
+      const st = race.state === 'race' || race.state === 'done' ? ghostAt(G.g, race.time, G.st) : null;
+      G.v.root.visible = !!st;
+      if (G.kind === 'iron') this.ironState = st; else this.ghostState = st;
+      if (!st) continue;
+      st.air = st.y - this.track.heightAt(st.x, st.z) > 0.3;
+      G.v.update(st, dt, this.track);
+    }
   }
 
   // practice laps already left tyre tracks along the racing line
@@ -429,6 +542,7 @@ export class RaceWorld {
       });
     }
     this._updateGhost(dt);
+    this._updateGuide();
     fx.update(dt, (x, z) => track.heightAt(x, z));
     this.pickups.update(dt, race, track);
     this.stadium.update(dt, this.view.camera);
