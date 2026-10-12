@@ -17,6 +17,7 @@ import { paintOf } from '../game/liveries.js';
 import { ghostAt } from '../game/ghost.js';
 import { wrapAngle, clamp, lerp } from '../sim/util.js';
 import { TRUCK } from '../sim/truck.js';
+import { mine } from '../sim/race.js';
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const _n = [0, 1, 0], _up = new THREE.Vector3(0, 1, 0), _nv = new THREE.Vector3(), _qy = new THREE.Quaternion();
@@ -249,7 +250,7 @@ export class RaceWorld {
     });
     for (const m of this.rings || []) if (m) { this.scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
     this.rings = race.racers.map((r) => {
-      if (!r.human) return null;
+      if (!mine(r)) return null;
       const m = playerRing(paintOf(r.entry.truckId, r.entry.livery).color);
       this.scene.add(m);
       return m;
@@ -471,7 +472,7 @@ export class RaceWorld {
           if (sev > 0.05) fx.landing(t.x, t.y, t.z, sev);
           this.fxState[ev[1]].landKick = clamp(ev[2] * 0.22, 0, 2.6);
           if (sev > 0.4) this.stadium.cheer(0.25);
-          if (r.human && sev > 0.5) this.shake = Math.max(this.shake, sev * 0.35);
+          if (mine(r) && sev > 0.5) this.shake = Math.max(this.shake, sev * 0.35);
           break;
         }
         case 'wall': fx.sparksAt(ev[3], t.y, ev[4], ev[5], ev[6], clamp(ev[2] / 12, 0.2, 1)); if (ev[2] > 8) this.stadium.cheer(0.15); break;

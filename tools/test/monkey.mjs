@@ -19,7 +19,8 @@ const page = await (await browser.newContext({ viewport: { width: 800, height: 4
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404')) errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push('PAGEERROR ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 4).join('\n')));
-await page.goto(`http://localhost:${server.address().port}/index.html?q=low&autopilot=1&laps=1&warp=6&credits=1`);
+// (sig, lankey: the several-phone screens stay off the internet: a code server that answers nothing, no STUN)
+await page.goto(`http://localhost:${server.address().port}/index.html?q=low&autopilot=1&laps=1&warp=6&credits=1&sig=ws://127.0.0.1:9/none&lankey=monkey`);
 await page.waitForFunction(() => window.__game && window.__game.state === 'title', null, { timeout: 120000 });
 // key mix: menu navigation heavy, some pause/back/mute
 const MENU = [['Enter', 30], ['ArrowDown', 14], ['ArrowUp', 10], ['ArrowLeft', 8], ['ArrowRight', 8], ['Escape', 6], ['KeyP', 2], ['KeyM', 2], ['Space', 4], ['KeyW', 3], ['KeyS', 3]];

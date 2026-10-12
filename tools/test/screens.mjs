@@ -4,6 +4,7 @@
 //        GAME_ROOT=<dir> node screens.mjs "<Playwright device, e.g. Galaxy S24 landscape>" outPrefix
 import { chromium, webkit, devices } from 'playwright';
 import http from 'http'; import fs from 'fs'; import path from 'path';
+import { mockSignal } from './mocksignal.mjs';
 const ROOT = process.env.GAME_ROOT;
 const byDevice = isNaN(+process.argv[2]);
 const DEV = byDevice ? devices[process.argv[2]] : null;
@@ -25,7 +26,8 @@ const page = await ctx.newPage();
 const logs = [];
 page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404')) logs.push(m.text()); });
 page.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
-await page.goto(`http://localhost:${server.address().port}/index.html?q=low`);
+const sig = await mockSignal(); // the room codes of the several-phone screens, without internet
+await page.goto(`http://localhost:${server.address().port}/index.html?q=low&sig=${encodeURIComponent(sig.url)}`);
 await page.waitForFunction(() => window.__game && window.__game.state === 'title', null, { timeout: 120000 });
 await page.addStyleTag({ content: '*, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; transition: none !important; }' });
 const names = [];
@@ -76,7 +78,13 @@ await snap('02cont', () => {
   g.ui.hide('menu'); g.toMenu();
 });
 await snap('02newrun', () => document.querySelector('#menu [data-a=p1]').click());
-await snap('03options', () => { const g = window.__game; g.ui.hide('newrun'); g.ui.hide('menu'); g.toOptions(() => {}); });
+// several phones: the choice, the menu, a room with its code, the QR room, the keypad
+await snap('02multi', () => { const g = window.__game; g.ui.hide('newrun'); g.toMultiPlayers(3, () => {}); });
+await snap('02netmenu', () => { const g = window.__game; g.ui.hide('two'); g.toNetMenu(3); });
+await snap('02nethost', () => { const g = window.__game; g.ui.hide('netmenu'); g._netHost(3, 'code'); }, 2500);
+await snap('02netqr', () => { const g = window.__game; g.ui.hide('nethost'); g.netLeave(false); g._netHost(2, 'qr'); }, 3000);
+await snap('02netjoin', () => { const g = window.__game; g.ui.hide('nethost'); g.netLeave(false); g._netJoin(2); });
+await snap('03options', () => { const g = window.__game; g.ui.hide('netjoin'); g.netLeave(false); g.ui.hide('menu'); g.toOptions(() => {}); });
 await snap('03ctrl', () => document.querySelector('#options [data-k=touch]').click());
 await snap('04help', () => { const g = window.__game; g.ui.hide('ctrlpick'); g.ui.hide('options'); g.toHelp(() => {}); });
 await snap('05scores', () => { const g = window.__game; g.ui.hide('help'); g.toScores(() => {}); });
@@ -118,4 +126,4 @@ s.save('${PRE}_sheet.png')
 `);
 try { execFileSync('python3', [`${PRE}_sheet.py`]); } catch (e) { /* no PIL */ }
 if (logs.length) console.log(logs.slice(0, 10).join('\n'));
-await browser.close(); server.close();
+await browser.close(); server.close(); sig.close();

@@ -1,6 +1,8 @@
 // Haptic feedback for the player's own knocks: gamepad rumble (dual-rumble) or
 // phone vibration (Android). Short pulses with a cooldown so it never buzzes.
 
+import { mine } from '../sim/race.js';
+
 export class Haptics {
   constructor(input, opt) {
     this.input = input;
@@ -22,12 +24,14 @@ export class Haptics {
     }
   }
 
-  // race events -> pulses for the human trucks
+  // race events -> pulses for the trucks driven here (one player alone drives with
+  // whatever is at hand: the pad or the phone of player 1's slot)
   handle(events, race) {
-    const who = (i) => { const r = race.racers[i]; return r && r.human && !r.finished ? r.entry.player : -1; };
+    const slot = (r) => (this.input.solo ? 0 : r.entry.player);
+    const who = (i) => { const r = race.racers[i]; return mine(r) && !r.finished ? slot(r) : -1; };
     for (const ev of events) {
       switch (ev[0]) {
-        case 'go': for (const r of race.racers) if (r.human) this.pulse(r.entry.player, 70, 0.6); break;
+        case 'go': for (const r of race.racers) if (mine(r)) this.pulse(slot(r), 70, 0.6); break;
         case 'wall': { const p = who(ev[1]); if (p >= 0 && ev[2] > 5) this.pulse(p, Math.min(90, 20 + ev[2] * 4), ev[2] / 14); break; }
         case 'bump': for (const i of [ev[1], ev[2]]) { const p = who(i); if (p >= 0 && ev[3] > 3.5) this.pulse(p, 40, ev[3] / 12); } break;
         case 'land': { const p = who(ev[1]); if (p >= 0 && ev[2] > 7) this.pulse(p, 45, (ev[2] - 6) / 10); break; }

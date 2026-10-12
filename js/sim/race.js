@@ -7,6 +7,9 @@ import { randomTrackSpot } from './track.js';
 import { rng, clamp } from './util.js';
 
 export const LAPS = 4;
+// a human truck driven from this device: in a two-phone race the other player's
+// truck is a human one too (for the rules) but `remote` (shown like a rival)
+export const mine = (r) => !!r && r.human && !r.remote;
 export const COUNTDOWN = 3.6;
 export const LATE_LIMIT = 30;   // seconds the field has to finish after the winner
 
@@ -78,8 +81,9 @@ export class Race {
         inp = r.ai.update(dt, trucks);
         inp.nitro = false;
       }
-      else if (r.human && this.autopilot) {
-        if (!r.ai) r.ai = new AIDriver(t, tr, { skill: Math.max(0, this.autopilotSkill ?? 0.95), aggression: 0.7, seed: 7 + r.i });
+      else if (r.human && (this.autopilot || r.bot)) {
+        // autopilot (tests), or `bot`: a player who left a two-phone race, driven by the CPU
+        if (!r.ai) r.ai = new AIDriver(t, tr, { skill: r.bot ? 0.9 : Math.max(0, this.autopilotSkill ?? 0.95), aggression: 0.7, seed: 7 + r.i });
         inp = r.ai.update(dt, trucks);
         if (this.autopilotSkill < 0) inp.throttle *= 0.45; // test: a hopeless driver
       } else if (r.human) inp = inputs[r.entry.player] || COAST;

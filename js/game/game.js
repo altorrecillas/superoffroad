@@ -6,7 +6,7 @@ import { Scene3D } from '../render/scene.js';
 import { RaceWorld } from '../render/world.js';
 import { Garage } from '../render/garage.js';
 import { Podium } from '../render/podium.js';
-import { Race, COUNTDOWN } from '../sim/race.js';
+import { Race, COUNTDOWN, mine } from '../sim/race.js';
 import { TRACKS, trackById, SEASON, SEASONS } from '../sim/tracks.js';
 import { buildPath, buildTrack } from '../sim/track.js';
 import { ellipsePoly } from '../sim/util.js';
@@ -34,6 +34,7 @@ import {
   loadScores, qualifies, addScore, fmtMoney, saveRun, loadRun, clearRun,
 } from './session.js';
 import { VERSION } from '../version.js';
+import { installNet } from './netgame.js';
 
 const DT = 1 / 120;
 // the Track Pak let you pick the body: bars are relative (ACEL, VEL, AGARRE, AMORT)
@@ -117,6 +118,7 @@ export class Game {
     this.paused = false;
     this.acc = 0;
     this.frameEvents = [];
+    this.net = null; // a two-phone game (js/game/netgame.js)
   }
   _loadOpt() { try { return JSON.parse(localStorage.getItem(LS_OPT)) || {}; } catch (e) { return {}; } }
   saveOpt() { try { localStorage.setItem(LS_OPT, JSON.stringify(this.opt)); } catch (e) { /* ignore */ } }
@@ -186,12 +188,13 @@ export class Game {
     const keepFull = () => { if (this.opt.fullscreen !== false && isTouch()) enterFullscreen(); };
     document.addEventListener('pointerup', keepFull);
     // a tap skips the intro fly-over (the keyboard and pads already can)
-    document.addEventListener('pointerup', () => { if (this.state === 'intro' && !this.paused && this.introT != null && this.introT > 0.6) this.introT = this.introHold; });
+    document.addEventListener('pointerup', () => { if (this.state === 'intro' && !this.paused && this.introT != null && this.introT > 0.6) this._skipIntro(); });
     document.addEventListener('click', keepFull);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && this.state === 'race' && !this.paused) this.pause();
       if (document.hidden && this.replayView && this.replayView.playing) this.replayView.setPlaying(false);
       this.audio.suspend(document.hidden);
+      if (!document.hidden && this.net) this._wake(true); // the browser lets the wake lock go when hidden
     });
     // a phone turned to portrait shows the "rotate" overlay: do not keep racing behind it
     const portrait = (this.portraitMQ = matchMedia('(orientation: portrait)'));
@@ -254,7 +257,8 @@ export class Game {
     const rv = this.replayView ? this.replayView.frame(dt) : null;
     // a race off screen (behind the shop or the podium) waits: no sounds from it there
     const hidden = this.state === 'shop' || this.state === 'podium';
-    if (!rv && this.race && !this.paused && !hidden) this.stepRace(dt);
+    if (!rv && this.race && !this.paused && !hidden) { if (this.race.shadow) this._guestFrame(dt); else this.stepRace(dt); }
+    if (this.net) this._netPingTick(dt);
     if (this.race && !hidden) {
       const vdt = rv ? rv.dt : this.paused ? 0 : dt;
       this.world.update(vdt, rv ? rv.alpha : this.acc / DT);
@@ -269,7 +273,12 @@ export class Game {
     if (this.attractTick) this.attractTick(dt);
     if (this.attract && this.attractCam) this.attractCam(dt);
     // a phone held upright only shows the "rotate" notice: no point drawing the 3D view
-    if (!(this.portraitMQ && this.portraitMQ.matches && isTouch())) this.view.render(dt);
+    // (?maxfps=N: tests running several browsers at once draw less often)
+    const cap = +(params.get('maxfps') || 0);
+    const draw = !cap || now - (this._drawn || 0) >= 1000 / cap;
+    if (draw && !(this.portraitMQ && this.portraitMQ.matches && isTouch())) { this.view.render(dt); this._drawn = now; }
+    // a new circuit built and drawn: the other phones can stop waiting for our silence
+    if (draw && this._sendLoaded && --this._sendLoaded === 0 && this.net) this.net.send({ t: 'loaded' });
     if (this.testFrames && --this.testFrames <= 0) { window.__ready = true; this.testFrames = 0; window.__shotInfo = { fps: this.fps, build: this.world.buildMs }; return; }
     requestAnimationFrame((t) => this.frame(t));
   }
@@ -282,10 +291,12 @@ export class Game {
     let n = 0;
     this.frameEvents.length = 0;
     const inputs = [this.input.get(0), this.input.get(1), this.input.get(2)];
+    // a race on several phones: the other players' controls come from their phones
+    if (this.net && this.net.role === 'host') for (let p = 1; p < 3; p++) { const ri = this.net.remoteInput(p); if (ri) inputs[p] = ri; }
     // touch "point to steer": convert a target heading into steering for player 1
     const p0 = inputs[0];
     if (p0.targetHeading != null && race) {
-      const me = race.racers.find((r) => r.human && r.entry.player === 0);
+      const me = race.racers.find((r) => mine(r) && r.entry.player === 0);
       if (me) {
         let d = p0.targetHeading - me.truck.h;
         d = Math.atan2(Math.sin(d), Math.cos(d));
@@ -306,21 +317,12 @@ export class Game {
       if (this.trial) this.trial.recorder.step(race);
       for (const ev of race.events) this.frameEvents.push(ev);
       this.input.consumeNitro();
+      if (this.net) this.net.consumeNitro();
       this.acc -= DT; n++;
     }
     if (n >= 12 * warp) this.acc = 0;
-    // the announcer follows the lead (one player only: with several it would be noise)
-    if (this.state === 'race' && !this.attract && race.state === 'race' && race.time > 4) {
-      const humans = race.racers.filter((r) => r.human);
-      const lead = race.order[0];
-      if (humans.length === 1 && lead && lead !== this._leader) {
-        if (this._leader) {
-          if (lead.human) this.audio.announce('lead', true);
-          else if (lead.entry.ironman && this._leader.human) this.audio.announce('ironman_lead', true);
-        }
-        this._leader = lead;
-      }
-    } else if (race.state === 'countdown') this._leader = null;
+    // the other phone gets the race as it is now and what happened in it
+    if (n && this.net && this.net.role === 'host' && !this.attract) this.net.sendRace(race, this.frameEvents);
     if (this.frameEvents.length) {
       this.world.handleEvents(this.frameEvents);
       this.audio.handle(this.frameEvents, race);
@@ -334,19 +336,43 @@ export class Game {
         if (this.raceLog && this.state === 'race' && ev[1] === this.raceLog.me.i) this._logEvent(ev);
       }
     }
-    // last on the last lap (for the comeback achievement)
-    const L = this.raceLog;
     if (this.tutorial && this.state === 'race' && !this.paused) {
-      const me = race.racers.find((r) => r.human);
+      const me = race.racers.find(mine);
       if (me) this.tutorial.update(dt, me, q[0]);
     }
+    this._raceTick(race);
+  }
+
+  // every frame of a race, simulated here or drawn from the other phone's
+  _raceTick(race) {
+    // the announcer follows the lead (one player only: with several it would be noise)
+    if (this.state === 'race' && !this.attract && race.state === 'race' && race.time > 4) {
+      const humans = race.racers.filter(mine);
+      const lead = race.order[0];
+      if (humans.length === 1 && lead && lead !== this._leader) {
+        if (this._leader) {
+          if (mine(lead)) this.audio.announce('lead', true);
+          else if (lead.entry.ironman && mine(this._leader)) this.audio.announce('ironman_lead', true);
+        }
+        this._leader = lead;
+      }
+    } else if (race.state === 'countdown') this._leader = null;
     // tilt steering: the way the phone is held just before the green light is straight ahead
     if (race.state === 'countdown' && race.time > -0.5 && !this._tiltCal && this.touch.mode === 'tilt') { this._tiltCal = true; this.touch.calibrate(); }
     if (race.state !== 'countdown') this._tiltCal = false;
+    // last on the last lap (for the comeback achievement)
+    const L = this.raceLog;
     if (L && this.state === 'race' && race.state === 'race' && !L.lastInFinal) {
       const me = L.me;
       if (!me.finished && me.lap === race.laps - 1 && me.pos === race.racers.length && race.racers.length > 1) L.lastInFinal = true;
     }
+  }
+
+  // a tap or OK during the fly-over: on to the race (both phones in a two-phone race)
+  _skipIntro(fromOther = false) {
+    if (this.state !== 'intro' || this.paused || this.introT == null || (!fromOther && this.introT <= 0.6)) return;
+    if (this.net && this.net.role === 'guest') this.net.send({ t: 'skip' });
+    this.introT = this.introHold;
   }
 
   _logEvent(ev) {
@@ -378,7 +404,7 @@ export class Game {
   _globalUI(a, src) {
     const racing = this.state === 'race' || this.state === 'intro';
     if (racing && !this.paused && src === 'pad' && (a === 'back' || a === 'ok')) return true; // B brakes, A accelerates
-    if (a === 'ok' && this.state === 'intro' && !this.paused && this.introT != null && this.introT > 0.6) { this.introT = this.introHold; return true; }
+    if (a === 'ok' && this.state === 'intro' && !this.paused && this.introT != null && this.introT > 0.6) { this._skipIntro(); return true; }
     if (racing && !this.paused && (a === 'pause' || a === 'back')) { this.pause(); return true; }
     if (racing && this.paused && a === 'pause') { this.resume(); return true; }
     if (a === 'mute') { this.audio.toggleMute(); this.ui.toast(this.audio.muted ? 'Sonido desactivado' : 'Sonido activado', 'small', 900); return true; }
@@ -392,13 +418,18 @@ export class Game {
 
   // ------------------------------------------------------------------ races
   startRace(id, reverse, opts = {}) {
+    // the other phones: a few busy seconds while a circuit is built and its first frames
+    // drawn (also the demo race behind the menus, while they wait in a room)
+    if (this.net) { this.net.send({ t: 'loading' }); this._sendLoaded = 3; }
     const track = this.world.loadTrack(id, reverse, opts.time, !!opts.rain);
     this.audio.setRain(!!opts.rain);
     const bug = trackById(id).pak ? Math.floor(Math.random() * 3) : -1;
     const entries = this.attract
       ? TRUCKS.map((d, i) => ({ truckId: d.id, vehicle: i === bug ? 'buggy' : 'truck', name: d.cpu.name, short: d.cpu.short, ironman: !!d.cpu.ironman, ...this.session.cpuSetup(d), slot: i }))
       : this.session.entries();
-    this.input.solo = entries.filter((e) => e.human).length <= 1;
+    // a two-phone race: player 2 drives from the other phone (a human truck, shown here as a rival)
+    if (this.net && !this.attract) for (const e of entries) if (e.human && e.player !== this.net.local) e.remote = true;
+    this.input.solo = entries.filter((e) => e.human && !e.remote).length <= 1;
     for (let p = 0; p < 3; p++) this.input.autoGas[p] = !!this.opt.autoGas && p === 0;
     const seed = params.get('seed') ? +params.get('seed') : (Math.random() * 1e9) | 0;
     // time trial: alone, no pickups, 3 laps, against the ghost of the best run
@@ -408,6 +439,7 @@ export class Game {
     const laps = opts.laps ?? (tutorial ? 9 : params.get('laps') ? +params.get('laps') : trial ? this.session.free.laps || 3 : undefined);
     const ropts = { seed, ...this.session.raceOpts(), laps, pickups: tutorial ? 'manual' : !trial, rain: !!opts.rain };
     this.race = new Race(track, entries, ropts);
+    for (const r of this.race.racers) if (r.entry.remote) r.remote = true;
     this.race.autopilot = params.get('autopilot') === '1';
     this.lapRecordSet = false;
     this.race.autopilotSkill = params.get('apskill') ? +params.get('apskill') : 0.95;
@@ -416,9 +448,17 @@ export class Game {
     this.assists = [];
     this.assistUsed = 0;
     this.replayRec = null;
+    this.assistBy = [];
     if (!this.attract) {
       const lvl = ASSIST_LEVELS[this.opt.assist] || 0;
-      for (const r of this.race.racers) if (r.human) this.assists[r.entry.player] = new SteerAssist(r.truck, track, lvl);
+      // (the other phone's player brings their own choice: it sets their own prize)
+      for (const r of this.race.racers) {
+        if (!r.human) continue;
+        const peer = r.remote && this.net.peerOf(r.entry.player);
+        const l = r.remote ? ASSIST_LEVELS[peer && peer.prefs.assist] || 0 : lvl;
+        this.assists[r.entry.player] = new SteerAssist(r.truck, track, l);
+        this.assistBy[r.entry.player] = l;
+      }
       this.assistUsed = lvl;
       // everything a replay needs: the recipe of the race and, step by step, the inputs
       this.replayRec = new ReplayRecorder(this.race, {
@@ -429,7 +469,7 @@ export class Game {
     this.world.setRace(this.race);
     this._applyGuide();
     // what the career needs from this race (player 1's truck)
-    const me1 = this.race.racers.find((r) => r.human && r.entry.player === 0);
+    const me1 = this.race.racers.find((r) => mine(r) && r.entry.player === 0);
     this.raceLog = !this.attract && me1 ? { me: me1, nitro: 0, walls: 0, lastInFinal: false } : null;
     this.trial = null;
     if (trial) {
@@ -451,36 +491,47 @@ export class Game {
     }
     this.hud.trial = this.trial ? { rec: this.trial.rec, iron: this.trial.iron, medal: this.trial.medal } : null;
     this.hud.build(this.race, this.session);
+    this._netHUD();
     this.world.refit(); // frame the arena below the board
     this.touch.root.classList.remove('intro');
     this._tiltNote = false;
-    this.touch.show(true);
+    this.touch.show(this.race.racers.some(mine)); // a player out of credits only watches
+    // the other phone builds the same race and draws what this one sends
+    if (this.net && this.net.role === 'host') {
+      const msg = { t: 'race', id, reverse, time: opts.time || null, rain: !!opts.rain, laps: this.race.laps, entries, sess: this.session.snapshot(), skipIntro: !!opts.skipIntro };
+      this.net.raceMsg = msg; this.net.phaseMsg = null;
+      this.net.send(msg);
+    }
     const tiltNote = this._tiltNote ? 'INCLINAR NECESITA TU PERMISO: DE MOMENTO, BOTONES<br>VUELVE A ELEGIRLO EN OPCIONES → CONTROL TÁCTIL' : '';
     if (opts.skipIntro) {
       this.state = 'race'; this._raceCamera(true);
       if (tiltNote) this.ui.toast('INCLINAR necesita tu permiso<br><span class="sub">Vuelve a elegirlo en Opciones → Control táctil</span>', 'small warn', 3600);
       return;
     }
+    this.tutorial = tutorial ? new Tutorial(this) : null;
+    this._intro(id, reverse, opts, tutorial, tiltNote);
+  }
+
+  // the fly-over before a race, with the circuit's banner (on both phones of a two-phone race)
+  _intro(id, reverse, opts, tutorial, tiltNote) {
     this.state = 'intro';
     this.introT = 0;
     this.introHold = 5.2;
     this.touch.root.classList.add('intro'); // the pad appears when the race camera takes over
     this.world.setCamera('intro', { duration: 5.0 });
     const def = trackById(id);
-    const no = this.session.raceNo + 1;
     const tr = this.trial;
     const C = this.session.cup;
-    this.tutorial = tutorial ? new Tutorial(this) : null;
     this.ui.show('intro', `<div class="banner"><div class="race">${tutorial ? 'TUTORIAL' : tr ? 'CONTRARRELOJ' : this.session.free ? 'CARRERA LIBRE' : `${cupName(C.no)} · CARRERA ${C.race + 1}/${CUP_SIZE}`}${def.pak ? ' · TRACK PAK' : ''}</div><div class="track">${esc(def.name)}</div>
       <div class="sub">${tutorial ? 'APRENDE LO BÁSICO EN UNA VUELTA' : `${opts.rain ? 'LLUVIA · ' : ''}${reverse ? 'SENTIDO INVERSO · ' : ''}${this.race.laps} ${this.race.laps === 1 ? 'VUELTA' : 'VUELTAS'} · ${tr ? (tr.rec ? `RÉCORD ${fmtTime(tr.rec.t)} · CON FANTASMA` : 'SIN RÉCORD AÚN') : DIFFICULTY[this.session.difficulty].name.toUpperCase()}`}</div>
-      ${tiltNote ? `<div class="howto no">${tiltNote}</div>` : this.session.raceNo === 0 && !this.session.free && this.session.players.length === 1 ? `<div class="howto">${this._controlsLine()}</div>` : ''}</div>`, 'passive');
+      ${tiltNote ? `<div class="howto no">${tiltNote}</div>` : this.session.raceNo === 0 && !this.session.free && (this.session.players.length === 1 || this.net) ? `<div class="howto">${this._controlsLine()}</div>` : ''}</div>`, 'passive');
     this.audio.music('race');
     this.audio.announce('track_' + id);
   }
 
   // the racing line ahead of the player (one player only: on a shared screen it would clutter)
   _applyGuide() {
-    const humans = this.race ? this.race.racers.filter((r) => r.human) : [];
+    const humans = this.race ? this.race.racers.filter(mine) : [];
     const tut = this.session && this.session.free && this.session.free.tutorial; // the tutorial talks about the line
     this.world.setGuide(!this.attract && humans.length === 1 && (this.opt.guide !== false || tut) ? humans[0].i : -1);
   }
@@ -488,7 +539,7 @@ export class Game {
   // the announcer's calls on the player's own moments
   _callout(ev) {
     const r = this.race.racers[ev[1]];
-    if (!r || !r.human || this.race.racers.filter((x) => x.human).length !== 1) return;
+    if (!mine(r) || this.race.racers.filter(mine).length !== 1) return;
     if (ev[0] === 'land' && ev[3] > 0.68) this.audio.announce('big_air', true); // the longest jumps of the game last ~0.75 s
     else if (ev[0] === 'wrongway') this.audio.announce('wrong_way', true);
   }
@@ -496,13 +547,13 @@ export class Game {
   // a human lap: personal record for this circuit and direction?
   _lapDone(ev) {
     const r = this.race.racers[ev[1]];
-    if (!r || !r.human || this.race.autopilot) return;
+    if (!mine(r) || this.race.autopilot) return;
     const key = lapKey(this.race.track.id, this.race.track.reverse);
     const prev = submitLap(key, ev[3], { v: r.entry.vehicle || 'truck', c: r.entry.truckId });
     if (prev === false) return;
     this.lapRecordSet = true;
     if (!prev) return; // first lap ever here: it becomes the record quietly
-    const who = this.race.racers.filter((x) => x.human).length > 1 ? `${r.entry.player + 1}P ` : '';
+    const who = this.race.racers.filter(mine).length > 1 ? `${r.entry.player + 1}P ` : '';
     this.ui.toast(`${who}¡Récord de vuelta! ${fmtTime(ev[3])}`, 'money', 2400);
     this.audio.sfx('pickup', { vol: 0.6, vary: 0, rate: 1.25 });
     if (ev[0] === 'lap' && ev[2] !== this.race.laps - 1) this.audio.announce('lap_record', true);
@@ -522,8 +573,8 @@ export class Game {
 
   // race camera from the options; multiplayer always uses the classic view
   _raceCamera(snap) {
-    const humans = this.race.racers.filter((r) => r.human);
-    const idx = Math.max(0, this.race.racers.findIndex((r) => r.human));
+    const humans = this.race.racers.filter(mine);
+    const idx = Math.max(0, this.race.racers.findIndex(mine));
     const mode = humans.length !== 1 ? 'classic' : this.opt.camera;
     this.world.setCamera(mode === 'follow' ? 'follow' : mode === 'zoom' ? 'zoom' : 'classic',
       { snap, index: idx, zoom: mode === 'follow' ? (this.opt.followZoom ?? 1) : (this.opt.zoomLevel ?? 0.52) });
@@ -533,7 +584,7 @@ export class Game {
   // of the close camera gives the classic view of the whole arena, and the other way.
   _zoomBy(f) {
     if (this.state !== 'race' || this.paused || !this.race || !isFinite(f)) return;
-    const humans = this.race.racers.filter((r) => r.human);
+    const humans = this.race.racers.filter(mine);
     if (humans.length !== 1) return; // shared screen: the classic view stays
     const w = this.world;
     if (w.camMode === 'follow') {
@@ -649,6 +700,7 @@ export class Game {
       this.introT = null;
       this._raceCamera(false);
       this.audio.announce(this.trial ? 'time_trial' : 'ready');
+      if (this.net && this.net.role === 'host') this.net.send({ t: 'introdone' });
     }
   }
 
@@ -661,11 +713,17 @@ export class Game {
     }
     this.state = 'post';
     if (this.trial) return this._trialDone();
-    const summary = this.session.applyResults(this.race, { assist: this.assistUsed || 0 });
+    const summary = this.session.applyResults(this.race, { assist: this.net ? this.assistBy : this.assistUsed || 0 });
     summary.advice = this._advice(summary);
     this.lastSummary = summary;
     // the race has counted: leaving the game from here on goes on to the shop
-    if (!this.session.free) saveRun(this.session, 'shop', summary.cup && summary.cup.done ? summary.cup : null);
+    if (this._keepRun()) saveRun(this.session, 'shop', summary.cup && summary.cup.done ? summary.cup : null);
+    // the other phone shows the same results
+    if (this.net && this.net.role === 'host') {
+      const msg = { t: 'done', summary, sess: this.session.snapshot() };
+      this.net.phaseMsg = msg;
+      this.net.send(msg);
+    }
     const L = this.raceLog;
     if (L) {
       const me = L.me, sp = this.session.players[me.entry.player];
@@ -675,12 +733,12 @@ export class Game {
         nitro: L.nitro, walls: L.walls, bags: me.money, lastInFinal: L.lastInFinal, track: this.race.track.id,
         km: me.prog / 1000, streak: sp ? sp.streak : 0, free: !!this.session.free,
       });
-      for (const p of this.session.players) this.career.score(p.earned);
+      for (const p of this.session.players) if (!this.net || p.index === this.net.local) this.career.score(p.earned);
     }
     this.stateTick = this._delay(2.2, () => this.showResults(summary));
     const winner = this.race.finishOrder[0];
     this.world.setCamera('tv', { index: winner.i });
-    this.audio.announce(winner.human ? 'winner' : 'race_over');
+    this.audio.announce(mine(winner) ? 'winner' : 'race_over');
     // fireworks over the stadium
     this.fireworksT = 4;
   }
@@ -808,6 +866,7 @@ export class Game {
 
   // ------------------------------------------------------------------ attract / title
   toTitle() {
+    if (this.net) this.netLeave(true);
     this.tutorial = null;
     this.ui.hideAll();
     this.hud.destroy();
@@ -922,7 +981,8 @@ export class Game {
       onOk: (i, b) => {
         const a = b.dataset.a;
         if (a === 'cont') this.continueRun();
-        else if (a === 'p1' || a === 'p2' || a === 'p3') { if (run) this._newRunAsk(run, () => fresh(+a[1])); else fresh(+a[1]); }
+        else if (a === 'p2' || a === 'p3') { const n = +a[1]; this.toMultiPlayers(n, () => (run ? this._newRunAsk(run, () => fresh(n)) : fresh(n))); }
+        else if (a === 'p1') { if (run) this._newRunAsk(run, () => fresh(1)); else fresh(1); }
         else if (a === 'free') { this.ui.hide('menu'); this.toFreeRace(); }
         else if (a === 'daily') this.toDaily();
         else if (a === 'pack') cyclePack(1);
@@ -945,6 +1005,9 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ saved championship
+  // only a championship on this device is kept (not a single race, nor a two-phone game)
+  _keepRun() { return !this.attract && !!this.session && !this.session.free && !this.session.net && this.session.players.length > 0; }
+
   // what a saved championship is: the next race of its cup and the level
   _runLine(run) {
     const s = run.session, n = s.players.length;
@@ -1005,7 +1068,7 @@ export class Game {
     const assist = ASSIST_LEVELS[this.opt.assist] || 0;
     const el = this.ui.show('diff', `
       <div class="panel fade-in" style="max-width:min(1180px,98vw)">
-        <div class="head">ELIGE LA DIFICULTAD <span class="gold" style="font-size:.6em">· ${n} ${n > 1 ? 'JUGADORES' : 'JUGADOR'}</span></div>
+        <div class="head">ELIGE LA DIFICULTAD <span class="gold" style="font-size:.6em">· ${n} ${n > 1 ? 'JUGADORES' : 'JUGADOR'}${this.net ? ` · EN ${n === 3 ? 'TRES' : 'DOS'} MÓVILES` : ''}</span></div>
         <div class="dcards">${DIFF_ORDER.map((k) => {
           const d = DIFFICULTY[k];
           return `<div class="dcard d-${k}" data-k="${k}">
@@ -1026,23 +1089,32 @@ export class Game {
     this.ui.navigate('diff', cards, {
       axis: 'h', start: Math.max(0, DIFF_ORDER.indexOf(this.opt.difficulty || 'normal')),
       onOk: (i, c) => {
-        this.opt.difficulty = c.dataset.k; this.saveOpt();
+        const k = c.dataset.k;
+        this.opt.difficulty = k; this.saveOpt();
         this.ui.hide('diff');
-        this.toSelect(n, c.dataset.k);
+        if (this.net) {
+          this.toSelect(1, k, {
+            title: 'JUGADOR 1: ELIGE TU VEHÍCULO', done: (pick) => this._netHostPicked(pick, k),
+            back: () => { this.net.send({ t: 'lobby', p: 'diff' }); this.toDifficulty(2); },
+          });
+        } else this.toSelect(n, k);
       },
-      onBack: () => { this.ui.hide('diff'); this.toMenu(); },
+      onBack: () => { this.ui.hide('diff'); if (this.net) this._netQuit(); else this.toMenu(); },
     });
   }
 
-  toSelect(n, diff) {
+  // o (a two-phone game): taken (picks made on the other phone), title, done(pick), back()
+  toSelect(n, diff, o = {}) {
     this.ui.hide('menu');
-    const picks = [];
+    const picks = (o.taken || []).filter(Boolean).slice();
+    const first = picks.length;
+    if (first) n = first + 1;
     let vehicle = this.opt.vehicle === 'buggy' ? 'buggy' : 'truck';
     const ask = () => {
       const p = picks.length;
       const el = this.ui.show('select', `
         <div class="panel fade-in" style="max-width:96vw">
-          <div class="head">${n > 1 ? `JUGADOR ${p + 1}: ` : ''}ELIGE TU VEHÍCULO</div>
+          <div class="head">${o.title || `${n > 1 ? `JUGADOR ${p + 1}: ` : ''}ELIGE TU VEHÍCULO`}</div>
           <div class="vpick">
             <div class="vtabs">${Object.keys(VEHICLE_INFO).map((v) => `<div class="vtab" data-v="${v}">${VEHICLE_INFO[v].name}</div>`).join('')}</div>
             <div class="vstats"></div>
@@ -1057,7 +1129,7 @@ export class Game {
                 <div class="who">${taken >= 0 ? 'Elegido' : 'Rival: ' + esc(d.cpu.name)}</div></div>`;
             }).join('')}
           </div>
-          <div class="hint-keys">${isTouch() ? 'Toca CAMIÓN o BUGGY para cambiar de vehículo' : '← → COLOR · ↑ ↓ CAMIÓN / BUGGY · ENTER ACEPTAR'}<br>El camión gris es siempre de Ivan "Ironman" Stewart.${n > 1 ? '<br>' + this._controlsHint(p) : ''}</div>
+          <div class="hint-keys">${isTouch() ? 'Toca CAMIÓN o BUGGY para cambiar de vehículo' : '← → COLOR · ↑ ↓ CAMIÓN / BUGGY · ENTER ACEPTAR'}<br>El camión gris es siempre de Ivan "Ironman" Stewart.${n > 1 && !o.done ? '<br>' + this._controlsHint(p) : ''}</div>
         </div>`);
       const cards = [...el.querySelectorAll('.card')];
       const paint = () => {
@@ -1080,11 +1152,16 @@ export class Game {
         onUp: () => setVehicle('truck'), onDown: () => setVehicle('buggy'),
         onOk: (i, c) => {
           picks.push({ truckId: c.dataset.id, vehicle });
+          if (o.done) return o.done(picks[picks.length - 1]);
           if (picks.length < n) ask();
           else if (this.freeSetup) this.startFreeRace(picks[0]);
           else this.startChampionship(picks, diff);
         },
-        onBack: () => { if (picks.length) { picks.pop(); ask(); } else { this.ui.hide('select'); if (this.freeSetup) this.toFreeRace(); else this.toDifficulty(n); } },
+        onBack: () => {
+          if (picks.length > first) { picks.pop(); ask(); return; }
+          this.ui.hide('select');
+          if (o.back) o.back(); else if (this.freeSetup) this.toFreeRace(); else this.toDifficulty(n);
+        },
       });
     };
     ask();
@@ -1105,7 +1182,8 @@ export class Game {
       this.attract = false;
       this.attractTick = null;
       this.freeSetup = null;
-      this.session = new Session(picks.map((q, i) => ({ truckId: q.truckId, vehicle: q.vehicle, livery: this._livery(i) })), diff, this.opt.pack || 'all');
+      this.session = new Session(picks.map((q, i) => ({ truckId: q.truckId, vehicle: q.vehicle, livery: q.livery || this._livery(i) })), diff, this.opt.pack || 'all');
+      if (this.net) { this.session.net = true; this.net.started = true; }
       if (params.get('credits')) for (const p of this.session.players) p.credits = +params.get('credits');
       this.nextRace();
     });
@@ -1114,7 +1192,7 @@ export class Game {
   nextRace() {
     this.ui.hideAll();
     // a championship is saved before each race: leaving during it, the race starts again
-    if (!this.attract && !this.session.free && this.session.players.length) saveRun(this.session, 'race');
+    if (this._keepRun()) saveRun(this.session, 'race');
     const { id, reverse, time, rain } = this.session.currentTrack();
     this.stateTick = null;
     this.startRace(id, reverse, { time, rain });
@@ -1307,6 +1385,7 @@ export class Game {
     this.state = 'results';
     const rows = summary.rows;
     const fastest = Math.min(...rows.map((r) => r.bestLap || Infinity)); // the race's fastest lap
+    const net = this.net, me = (r) => r.human && (!net || r.player === net.local); // this phone's row
     const html = `
       <div class="panel fade-in" style="max-width:96vw">
         <div class="head">${this.session.free ? `CARRERA LIBRE · ${esc(trackById(this.session.free.id).name).toUpperCase()}` : summary.cup ? `${summary.cup.name} · CARRERA ${summary.cup.race}/${summary.cup.of}` : `RESULTADOS · CARRERA ${summary.raceNo + 1}`}</div>
@@ -1315,17 +1394,17 @@ export class Game {
           ${rows.map((r) => {
             const d = { css: r.css || truckDef(r.truckId).css }, pl = summary.players.find((x) => x.place === r.place && r.human);
             const fast = r.bestLap && r.bestLap === fastest;
-            return `<div class="place ${r.human ? 'me' : ''}">${r.place}º</div>
-              <div class="${r.human ? 'me' : ''}"><span class="chip" style="background:${d.css}"></span>${esc(r.human ? r.name : r.name)}</div>
-              <div class="${r.human ? 'me' : ''}">${r.time ? fmtTime(r.time) : '—'}</div>
-              <div class="${r.human ? 'me' : ''}${fast ? ' fast' : ''}">${r.bestLap ? fmtTime(r.bestLap) : '—'}</div>
-              <div class="${r.human ? 'me gold' : 'muted'}">${pl ? fmtMoney(pl.prize + pl.bags) : ''}</div>`;
+            return `<div class="place ${me(r) ? 'me' : ''}">${r.place}º</div>
+              <div class="${me(r) ? 'me' : ''}"><span class="chip" style="background:${d.css}"></span>${esc(r.name)}</div>
+              <div class="${me(r) ? 'me' : ''}">${r.time ? fmtTime(r.time) : '—'}</div>
+              <div class="${me(r) ? 'me' : ''}${fast ? ' fast' : ''}">${r.bestLap ? fmtTime(r.bestLap) : '—'}</div>
+              <div class="${me(r) ? 'me gold' : r.human ? 'gold' : 'muted'}">${pl ? fmtMoney(pl.prize + pl.bags) : ''}</div>`;
           }).join('')}
         </div>
         ${this._cupHTML(summary)}${this._lapRecordHTML()}${this.session.free ? '' : this._multHTML(summary)}${summary.advice ? `<div class="laprec advice">${summary.advice}</div>` : ''}
         <div class="verdict">${this.session.free ? summary.players.map((p) => `<div class="${p.place === 1 ? 'ok' : ''}"><span class="big">${p.place === 1 ? '¡Victoria!' : p.place + 'º puesto'}</span></div>`).join('') : summary.players.map((p) => {
           const pl = this.session.players[p.index];
-          const tag = this.session.players.length > 1 ? `${p.index + 1}P · ` : '';
+          const tag = net ? (p.index === net.local ? 'TÚ · ' : `${p.index + 1}P · `) : this.session.players.length > 1 ? `${p.index + 1}P · ` : '';
           if (p.lost) return `<div class="bad"><span class="big">${tag}${p.credits > 0 ? '¡Pierdes un crédito!' : '¡Sin créditos!'}</span><br>${this._lostReason()} · Te ${p.credits === 1 ? 'queda 1 crédito' : `quedan ${p.credits} créditos`}</div>`;
           return `<div class="ok"><span class="big">${tag}${p.place === 1 ? '¡Victoria!' : 'Sigues en carrera'}</span><br>Premio ${fmtMoney(p.prize)}${p.bags ? ` + bolsas ${fmtMoney(p.bags)}` : ''} · Créditos ${p.credits}</div>`;
         }).join('')}</div>
@@ -1351,7 +1430,8 @@ export class Game {
       });
       return;
     }
-    const next = () => this._fade(() => {
+    // two phones: both press CONTINUAR, then the host decides what comes next
+    const next = net ? () => this._netReady('results', el.querySelector('[data-a=cont]')) : () => this._fade(() => {
       this.ui.hide('results');
       const go = () => {
         // players without credits are out
@@ -1380,23 +1460,24 @@ export class Game {
     this.touch.show(false);
     this.state = 'podium';
     this.audio.stopRace();
+    if (this.net) { this.net.send({ t: 'loading' }); this._sendLoaded = 3; } // a new scene to draw (busy a moment)
     if (!this.podium) this.podium = new Podium(this.view, this.world.templates);
     const st = cup.standings, solo = this.session.players.length === 1;
-    const mePos = st.findIndex((x) => x.human);
-    const nm = (x) => (x.human ? (solo ? 'TÚ' : `JUGADOR ${x.player + 1}`) : x.name);
+    const isMe = (x) => x.human && (!this.net || x.player === this.net.local); // this phone's player
+    const nm = (x) => (x.human ? (solo || (this.net && isMe(x)) ? 'TÚ' : `JUGADOR ${x.player + 1}`) : x.name);
     const winner = st[0];
-    this.podium.setup(st.slice(0, 3), cup.name, winner.human ? (solo ? '¡CAMPEÓN DE LA COPA!' : `¡${nm(winner)} GANA LA COPA!`) : `${(winner.short || winner.name).toUpperCase()} GANA LA COPA`);
+    this.podium.setup(st.slice(0, 3), cup.name, winner.human ? (solo || (this.net && isMe(winner)) ? '¡CAMPEÓN DE LA COPA!' : `¡${nm(winner)} GANA LA COPA!`) : `${(winner.short || winner.name).toUpperCase()} GANA LA COPA`);
     this.view.setActive(this.podium.scene, this.podium.camera);
     this.stateTick = (dt) => this.podium.update(dt);
     this.audio.music('title');
     this.audio.sfx('horn', { vol: 0.6, vary: 0 });
-    this.audio.announce(winner.human ? 'winner' : 'race_over');
-    this.career.cup(!!winner.human);
-    saveRun(this.session, 'shop'); // seen: continuing from here goes on to the shop
+    this.audio.announce(isMe(winner) ? 'winner' : 'race_over');
+    this.career.cup(isMe(winner));
+    if (this._keepRun()) saveRun(this.session, 'shop'); // seen: continuing from here goes on to the shop
     const medal = ['gold', 'silver', 'bronze'];
-    const mine = st.map((x, i) => ({ x, i })).filter((o) => o.x.human);
-    const verdict = mine.map(({ x, i }) => {
-      const who = solo ? '' : `${x.player + 1}P · `;
+    const ours = st.map((x, i) => ({ x, i })).filter((o) => o.x.human);
+    const verdict = ours.map(({ x, i }) => {
+      const who = solo ? '' : this.net && isMe(x) ? 'TÚ · ' : `${x.player + 1}P · `;
       return i < 3 ? `<div class="cup-won ${medal[i]}"><i class="ic">${ACH_ICONS.cup}</i><div><b>${who}${['¡CAMPEÓN!', 'SUBCAMPEÓN', 'TERCER PUESTO'][i]}</b><span>Premio de la copa ${fmtMoney(x.bonus || 0)}</span></div></div>`
         : `<div class="cup-won none"><div><b>${who}${i + 1}º EN LA COPA</b><span>Sin premio esta vez</span></div></div>`;
     }).join('');
@@ -1404,7 +1485,7 @@ export class Game {
       <div class="panel fade-in podium-panel">
         <div class="head">${cup.name}</div>
         ${verdict}
-        <div class="table cup">${st.map((x, i) => `<div class="place ${x.human ? 'me' : ''}">${i + 1}º</div><div class="${x.human ? 'me' : ''}"><span class="chip" style="background:${x.css || truckDef(x.truckId).css}"></span>${esc(nm(x))}</div><div class="${x.human ? 'me' : ''} pts">${x.points} PTS</div>`).join('')}</div>
+        <div class="table cup">${st.map((x, i) => `<div class="place ${isMe(x) ? 'me' : ''}">${i + 1}º</div><div class="${isMe(x) ? 'me' : ''}"><span class="chip" style="background:${x.css || truckDef(x.truckId).css}"></span>${esc(nm(x))}</div><div class="${isMe(x) ? 'me' : ''} pts">${x.points} PTS</div>`).join('')}</div>
         <div class="menu" style="padding-top:4px"><div class="btn primary">CONTINUAR</div></div>
       </div>`);
     const done = () => this._fade(() => {
@@ -1474,10 +1555,13 @@ export class Game {
 
   // what this race paid, when it is not the plain ×1
   _multHTML(summary) {
-    if (!summary || summary.mult == null || summary.mult === 1) return '';
+    // (a two-phone race: this phone's player's own multiplier)
+    const own = this.net && summary && summary.players.find((p) => p.index === this.net.local);
+    const mult = own ? own.mult : summary && summary.mult, assist = own ? own.assist : summary && summary.assist;
+    if (mult == null || mult === 1) return '';
     const d = this.session.diff;
-    const as = summary.assist ? ` · DIRECCIÓN ASISTIDA ${summary.assist > 1 ? 'FUERTE' : 'SUAVE'} (−${summary.assist * 10} %)` : '';
-    return `<div class="laprec mult">PREMIOS <b>×${String(summary.mult).replace('.', ',')}</b> · ${d.name.toUpperCase()}${as}</div>`;
+    const as = assist ? ` · DIRECCIÓN ASISTIDA ${assist > 1 ? 'FUERTE' : 'SUAVE'} (−${assist * 10} %)` : '';
+    return `<div class="laprec mult">PREMIOS <b>×${String(mult).replace('.', ',')}</b> · ${d.name.toUpperCase()}${as}</div>`;
   }
   _lapRecordHTML() {
     const tr = this.race && this.race.track;
@@ -1492,11 +1576,21 @@ export class Game {
 
   // ------------------------------------------------------------------ shop
   toShop(k) {
+    const net = this.net;
     const alive = this.session.players.filter((p) => p.alive);
-    if (k >= alive.length) { this._fade(() => { this.ui.hide('shop'); this.view.setActive(null, null); this.stateTick = null; this.nextRace(); }); return; }
-    const p = alive[k];
+    if (!net && k >= alive.length) { this._fade(() => { this.ui.hide('shop'); this.view.setActive(null, null); this.stateTick = null; this.nextRace(); }); return; }
+    // several phones: each one shops for its own player, at the same time (a guest's
+    // copy of the championship is replaced after every purchase: read it afresh)
+    let p = net ? this.session.players[net.local] : alive[k];
     this.state = 'shop';
     this.audio.stopRace();
+    if (net) { net.send({ t: 'loading' }); this._sendLoaded = 3; } // the garage to draw (busy a moment)
+    this._shopWaiting = false;
+    if (net && (!p || !p.alive)) {
+      this._netWait('SIN CRÉDITOS', 'Ahora miras las carreras. El otro jugador está en el taller…');
+      this._netReadySend('shop');
+      return;
+    }
     const def = truckDef(p.truckId);
     this.garage.setTruck(p.truckId, p.vehicle, p.livery);
     this.garage.offsetX = innerHeight < 460 ? 330 : 210; // keep the truck clear of the (wider) phone panel
@@ -1504,7 +1598,8 @@ export class Game {
     this.stateTick = (dt) => this.garage.update(dt);
     this.audio.music('shop');
     const render = (focus = 0) => {
-      saveRun(this.session, 'shop'); // each purchase is kept
+      if (net) p = this.session.players[net.local];
+      if (this._keepRun()) saveRun(this.session, 'shop'); // each purchase is kept
       const items = [
         ...UPGRADES.map((u) => {
           const lvl = p.upgrades[u.id], maxed = lvl >= MAX_LEVEL, cost = maxed ? 0 : UPGRADE_COST[lvl];
@@ -1522,20 +1617,26 @@ export class Game {
             <div class="who" style="color:${def.css}">${this.session.players.length > 1 ? (p.index + 1) + 'P · ' : ''}${VEHICLE_INFO[p.vehicle]?.name || 'CAMIÓN'} ${def.name.toUpperCase()}</div></div>
             <div style="text-align:right"><div class="muted" style="font-size:18px">DINERO</div><div class="cash">${fmtMoney(p.money)}</div></div></div>
           <div class="items">${items.map((it) => `
-            <div class="item ${it.dis ? 'disabled' : ''} ${it.maxed ? 'maxed' : ''}" data-k="${it.k}">
+            <div class="item ${it.dis || (this._shopWaiting && it.k !== 'done') ? 'disabled' : ''} ${it.maxed ? 'maxed' : ''}" data-k="${it.k}">
               <div class="nm">${it.nm}</div><div class="pr">${it.pr}</div>
               <div class="ds">${it.ds}</div>
               <div class="lv">${it.lv != null ? Array.from({ length: MAX_LEVEL }, (_, i) => `<i class="${i < it.lv ? 'on' : ''}"></i>`).join('') : ''}</div>
             </div>`).join('')}</div>
         </div>`);
       const els = [...el.querySelectorAll('.item')];
+      const done = el.querySelector('[data-k=done]');
+      if (this._shopWaiting) { done.classList.add('waiting'); done.innerHTML = '<div class="nm"><i class="spin"></i>Esperando al otro jugador…</div>'; }
+      this._shopRender = render;
       // allow focusing disabled items to read them, but not buying
       this.ui.navigate('shop', els, {
         start: Math.min(focus, els.length - 1),
         onOk: (i, it) => {
           const key = it.dataset.k;
-          if (key === 'done') return this.toShop(k + 1);
+          if (this._shopWaiting) return;
+          if (key === 'done') { if (net) { this._shopWaiting = true; render(i); this._netReadySend('shop'); return; } return this.toShop(k + 1); }
           if (key === 'paint') return this._paintShop(p, () => render(i));
+          // player 2's money lives on player 1's phone: it buys there and sends back the result
+          if (net && net.role === 'guest') { this._shopFocus = i; net.send({ t: 'buy', key }); return; }
           let ok = false;
           if (key === 'nitro1') ok = this.session.buyNitro(p, 1) > 0;
           else if (key === 'nitro5') ok = this.session.buyNitro(p, 5) > 0;
@@ -1545,7 +1646,7 @@ export class Game {
           if (ok && UPGRADES.every((u) => p.upgrades[u.id] >= MAX_LEVEL)) this.career.maxed();
           render(i);
         },
-        onBack: () => this.toShop(k + 1),
+        onBack: () => { if (!net) this.toShop(k + 1); },
       }).allowDisabled = true;
     };
     render(0);
@@ -1600,7 +1701,8 @@ export class Game {
         if (!ok(l)) { this.audio.ui('deny'); this.ui.toast(`Se gana con «${name(l.unlock)}»`, 'small', 1600); return; }
         p.livery = l.id;
         const all = (this.opt.liveries || ['team', 'team', 'team']).slice();
-        all[p.index] = l.id; this.opt.liveries = all; this.saveOpt();
+        all[this.net ? 0 : p.index] = l.id; this.opt.liveries = all; this.saveOpt();
+        if (this.net && this.net.role === 'guest') this.net.send({ t: 'paint', livery: l.id });
         sw.forEach((x) => x.classList.toggle('cur', x === b));
         this.audio.sfx('cash');
         show(l.id);
@@ -1610,17 +1712,21 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ pause / options
-  pause() {
+  // a two-phone race stops on both phones: remote, the other one paused it (note: why)
+  pause(remote = false, note = '') {
     if (this.paused) return;
     this.paused = true;
     this.audio.pause(true);
     this.touch.show(false); // the pad would cover the menu
+    const net = this.net;
+    if (net && !remote) net.send({ t: 'pause' });
+    const msg = note || (remote ? 'El otro jugador ha parado la carrera.' : '');
     const el = this.ui.show('pause', `
-      <div class="panel fade-in"><div class="head">PAUSA</div><div class="menu">
+      <div class="panel fade-in"><div class="head">PAUSA</div>${msg ? `<div class="nethelp">${msg}</div>` : ''}<div class="menu">
         <div class="btn" data-a="resume">CONTINUAR</div>
-        <div class="btn" data-a="restart">REINICIAR CARRERA</div>
+        ${!net || net.role === 'host' ? '<div class="btn" data-a="restart">REINICIAR CARRERA</div>' : ''}
         <div class="btn" data-a="opts">OPCIONES</div>
-        <div class="btn" data-a="quit">${this.session.free ? 'SALIR AL TÍTULO' : 'GUARDAR Y SALIR'}</div>
+        <div class="btn" data-a="quit">${net ? 'SALIR DE LA PARTIDA' : this.session.free ? 'SALIR AL TÍTULO' : 'GUARDAR Y SALIR'}</div>
       </div></div>`);
     this.ui.navigate('pause', [...el.querySelectorAll('.btn')], {
       onOk: (i, b) => {
@@ -1628,18 +1734,20 @@ export class Game {
         if (a === 'resume') this.resume();
         else if (a === 'restart') { this._fade(() => { this.resume(); this.nextRace(); }); }
         else if (a === 'opts') this.toOptions(() => { this.paused = false; this.pause(); });
-        else if (a === 'quit') { this._fade(() => { this.resume(); this.toTitle(); }); } // a championship stays saved: CONTINUAR
+        else if (a === 'quit') { this._fade(() => { this.resume(true); this.toTitle(); }); } // a championship stays saved: CONTINUAR
       },
       onBack: () => this.resume(),
     });
   }
-  resume() {
+  resume(remote = false) {
+    if (this.net && this.paused && !remote) this.net.send({ t: 'resume' });
     this.paused = false;
+    this._stallPause = false;
     this.audio.pause(false);
     this.ui.hide('pause');
     this.ui.hide('ctrlpick');
     this.ui.hide('options');
-    if (this.state === 'race' || this.state === 'intro') this.touch.show(true);
+    if ((this.state === 'race' || this.state === 'intro') && this.race) this.touch.show(this.race.racers.some(mine)); // a player out of credits only watches
     this.last = performance.now();
   }
 
@@ -1743,8 +1851,16 @@ export class Game {
       if (d.k === 'assist') {
         // also in the middle of a race (pause menu); the prize follows the strongest level used
         const lvl = ASSIST_LEVELS[o.assist] || 0;
-        for (const a of this.assists || []) if (a) a.level = lvl;
-        if (this.race && !this.attract && this.race.state !== 'done') this.assistUsed = Math.max(this.assistUsed || 0, lvl);
+        const net = this.net, racing = this.race && !this.attract && this.race.state !== 'done';
+        if (net && net.role === 'guest') { net.prefs.assist = o.assist; net.send({ t: 'prefs', assist: o.assist }); if (this._pred) this._pred.assist.level = lvl; } // the host applies it (and our prediction)
+        else if (net) {
+          const a = this.assists && this.assists[0];
+          if (a) a.level = lvl;
+          if (racing) this.assistBy[0] = Math.max(this.assistBy[0] || 0, lvl);
+        } else {
+          for (const a of this.assists || []) if (a) a.level = lvl;
+          if (racing) this.assistUsed = Math.max(this.assistUsed || 0, lvl);
+        }
         paintHint();
       }
     };
@@ -1806,6 +1922,7 @@ export class Game {
         <p>Recoge <b style="color:#79c2ff">nitros</b> y <b class="gold">bolsas de dinero</b> en la pista. Con el dinero mejora tu camión en el taller: neumáticos, amortiguadores, aceleración y velocidad punta (5 niveles cada uno), o compra más nitro.</p>
         <p>El campeonato va por <b>copas</b> de 4 carreras con puntos: al final de cada una, los tres primeros suben al <b>podio</b> y los jugadores que suben cobran un premio. En <b>LOGROS</b> están los 26 retos y tus estadísticas; muchos logros desbloquean <b>pinturas</b> para tu camión en el taller. El <b>DESAFÍO DEL DÍA</b> es una contrarreloj distinta cada día, con medallas y racha. Una de cada cinco carreras es con <b>lluvia</b>: la pista agarra menos. En el móvil puedes conducir <b>inclinando</b> el teléfono (Opciones → Control táctil).</p>
         <p>El campeonato se guarda solo: si sales del juego, <b>CONTINUAR</b> en el menú principal lo retoma. Una carrera que se quedó a medias vuelve a empezar desde la parrilla; una que ya habías terminado cuenta y sigues en el taller.</p>
+        <p><b>Cada uno en su móvil</b> (2 o 3 JUGADORES → EN DOS o TRES MÓVILES): todos en la misma WiFi o en el punto de acceso de uno. Un móvil pulsa CREAR PARTIDA y a los demás, en esa pantalla, les aparece sola la partida de su WiFi (o UNIRSE CON CÓDIGO con el número que enseña); sin internet, CREAR CON QR y UNIRSE CON QR (cada uno escanea el QR del otro). El jugador 1 pulsa EMPEZAR cuando están todos. Una pausa para a todos; si alguien sale, su camión sigue para la CPU.</p>
         <p>Puedes correr con el <b>camión</b> (más agarre y velocidad punta, gana los empujones) o con el <b>buggy</b> del <i>Track Pak</i> (acelera más y aterriza mejor los saltos, pero es ligero y derrapa más).</p>
         <p>Hay 16 circuitos (los 8 de la recreativa y los 8 del <i>Track Pak</i>), cada uno en los dos sentidos. En <b>CARRERA LIBRE</b> puedes probar cualquiera, con el sentido y la luz que quieras.</p>
         <p>En <b>CONTRARRELOJ</b> (Carrera libre → Modo) corres contra el <b>fantasma</b> de tu mejor tiempo y el <b>fantasma dorado de Ironman</b>: gánale para la medalla de <b>oro</b>; a menos del 5 % es <b>plata</b> y a menos del 12 %, <b>bronce</b>. Pellizca la pista para acercar o alejar la cámara.</p>
@@ -1825,26 +1942,34 @@ export class Game {
   // ------------------------------------------------------------------ game over
   toGameOver() {
     this.state = 'gameover';
-    clearRun(); // the championship ends here (CONTINUAR with 3 more credits saves it again in the shop)
+    const net = this.net;
+    if (!this.session.net) clearRun(); // the championship ends here (CONTINUAR with 3 more credits saves it again in the shop)
+    // two phones: the same screen on the other one (each enters its own initials there)
+    if (net && net.role === 'host') { const msg = { t: 'gameover', sess: this.session.snapshot() }; net.phaseMsg = msg; net.send(msg); }
     this.ui.hideAll();
     this.hud.destroy();
     this.touch.show(false);
     this.audio.music('title');
     this.audio.announce('game_over');
     const best = this.session.players.slice().sort((a, b) => b.earned - a.earned);
-    const queue = best.filter((p) => qualifies(p.earned) && p.earned > 0);
+    const queue = best.filter((p) => qualifies(p.earned) && p.earned > 0 && (!net || p.index === net.local));
     const continueScreen = () => {
+      const tag = (p) => (net ? (p.index === net.local ? 'TÚ · ' : `${p.index + 1}P · `) : this.session.players.length > 1 ? (p.index + 1) + 'P · ' : '');
+      const guest = net && net.role === 'guest';
       const el = this.ui.show('gameover', `
         <div class="panel fade-in"><div class="head">FIN DE LA PARTIDA</div>
-          <div class="verdict">${best.map((p) => `${this.session.players.length > 1 ? (p.index + 1) + 'P · ' : ''}Ganado: <span class="gold">${fmtMoney(p.earned)}</span> · ${this.session.raceNo} ${this.session.raceNo === 1 ? 'carrera' : 'carreras'}`).join('<br>')}</div>
+          <div class="verdict">${best.map((p) => `${tag(p)}Ganado: <span class="gold">${fmtMoney(p.earned)}</span> · ${this.session.raceNo} ${this.session.raceNo === 1 ? 'carrera' : 'carreras'}`).join('<br>')}</div>
+          ${guest ? '<div class="nethelp">El jugador 1 decide si seguís con 3 créditos más.</div>' : ''}
           <div class="menu" style="padding-top:0">
-            <div class="btn primary" data-a="cont">CONTINUAR (3 CRÉDITOS)</div>
-            <div class="btn" data-a="end">TERMINAR</div>
+            ${guest ? '<div class="btn" data-a="quit">SALIR DE LA PARTIDA</div>' : `<div class="btn primary" data-a="cont">CONTINUAR (3 CRÉDITOS)</div>
+            <div class="btn" data-a="end">TERMINAR</div>`}
           </div></div>`);
       this.ui.navigate('gameover', [...el.querySelectorAll('.btn')], {
         onOk: (i, b) => {
+          if (b.dataset.a === 'quit') return this._netQuit();
           if (b.dataset.a === 'cont') {
             for (const p of this.session.players) { p.alive = true; p.credits = 3; p.continued = true; }
+            if (this.net) { this.net.send({ t: 'cont' }); this._netShop(); return; }
             this._fade(() => { this.ui.hide('gameover'); this.toShop(0); });
           } else this._fade(() => { this.ui.hide('gameover'); this.toTitle(); });
         },
@@ -1888,3 +2013,5 @@ export class Game {
     el.querySelector('.btn').addEventListener('click', finish);
   }
 }
+
+installNet(Game);

@@ -18,6 +18,7 @@ try {
   await waitState('title', 90000);
   await page.keyboard.press('Enter'); await waitState('menu');
   await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
+  await page.keyboard.press('Enter'); await page.waitForTimeout(400); // EN ESTE APARATO (the focus on a computer)
   await page.keyboard.press('Enter'); await page.waitForTimeout(400); // difficulty: PILOTO
   await page.keyboard.press('Enter'); await page.waitForTimeout(400); await shot('1select2');
   await page.keyboard.press('ArrowRight'); await page.keyboard.press('Enter');

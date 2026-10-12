@@ -163,8 +163,10 @@ export class Session {
   prizeMult(assist = 0) { return Math.round((this.diff.prize || 1) * (1 - 0.1 * assist) * 100) / 100; }
 
   // apply a finished race; returns a summary for the results screen
-  // opts.assist: the strongest steering assist used in the race (0..2)
+  // opts.assist: the strongest steering assist used in the race (0..2), or one per
+  // player (a two-phone race: each player's own choice sets their own prize)
   applyResults(race, opts = {}) {
+    const assistOf = (i) => (Array.isArray(opts.assist) ? opts.assist[i] || 0 : opts.assist || 0);
     const rows = race.finishOrder.map((r) => ({
       truckId: r.entry.truckId, name: r.entry.name, short: r.entry.short, vehicle: r.entry.vehicle || 'truck', livery: r.entry.livery, css: paintOf(r.entry.truckId, r.entry.livery).css, human: r.human, player: r.entry.player,
       place: r.place, time: r.finished && !r.dnf ? r.finishTime : null, bestLap: r.bestLap, bags: r.money,
@@ -174,13 +176,13 @@ export class Session {
     this._adapt(race);
     const cpuPlaces = rows.filter((r) => !r.human).map((r) => r.place);
     const ironPlace = rows.find((r) => r.ironman)?.place ?? 99;
-    const out = { rows, players: [], raceNo: this.raceNo, mult: this.prizeMult(opts.assist || 0), assist: opts.assist || 0 };
+    const out = { rows, players: [], raceNo: this.raceNo, mult: this.prizeMult(assistOf(0)), assist: assistOf(0) };
     for (const row of rows) {
       if (!row.human) continue;
       const p = this.players[row.player];
       const r = race.racers.find((x) => x.human && x.entry.player === p.index);
       // harder levels pay more (and score more in the records table)
-      const k = this.prizeMult(opts.assist || 0);
+      const k = this.prizeMult(assistOf(p.index));
       const prize = Math.round(((PRIZES[row.place - 1] || 0) * k) / 1000) * 1000;
       const bags = Math.round((row.bags * k) / 1000) * 1000;
       row.bags = bags;
@@ -194,15 +196,16 @@ export class Session {
       else if (this.diff.rule === 'ironman') lost = ironPlace < row.place;
       else lost = cpuPlaces.some((c) => c < row.place);
       if (lost) p.credits--;
-      out.players.push({ index: p.index, prize, bags, lost, credits: p.credits, place: row.place, mult: k });
+      out.players.push({ index: p.index, prize, bags, lost, credits: p.credits, place: row.place, mult: k, assist: assistOf(p.index) });
     }
-    if (!this.free) out.cup = this._cupPoints(rows, this.prizeMult(opts.assist || 0));
+    if (!this.free) out.cup = this._cupPoints(rows, (i) => this.prizeMult(assistOf(i)));
     this.raceNo++;
     return out;
   }
 
   // cup points of this race; at the end of the cup the standings and the bonuses
-  _cupPoints(rows, k) {
+  // (mult(i): what player i's prizes are multiplied by)
+  _cupPoints(rows, mult) {
     const C = this.cup;
     for (const r of rows) C.points[r.truckId] = (C.points[r.truckId] || 0) + (CUP_POINTS[r.place - 1] || 0);
     C.race++;
@@ -213,7 +216,7 @@ export class Session {
       standings.forEach((st, i) => {
         if (!st.human) return;
         const p = this.players[st.player];
-        st.bonus = Math.round(((CUP_BONUS[i] || 0) * k) / 1000) * 1000;
+        st.bonus = Math.round(((CUP_BONUS[i] || 0) * mult(st.player)) / 1000) * 1000;
         p.money += st.bonus;
         p.earned += st.bonus;
       });
@@ -274,8 +277,9 @@ export class Session {
       players: this.players.map((p) => ({ ...p, upgrades: { ...p.upgrades } })),
     };
   }
-  // null when the data makes no sense (damaged, or from a format that no longer exists)
-  static restore(d) {
+  // null when the data makes no sense (damaged, or from a format that no longer exists);
+  // allowOver: a finished championship too (the guest's copy at the game over)
+  static restore(d, allowOver = false) {
     const num = (v, min, max) => typeof v === 'number' && isFinite(v) && v >= min && v <= max;
     if (!d || !DIFFICULTY[d.difficulty] || !Array.isArray(d.players) || d.players.length < 1 || d.players.length > 3) return null;
     if (!Number.isInteger(d.raceNo) || d.raceNo < 0) return null;
@@ -288,7 +292,7 @@ export class Session {
       Object.assign(q, { money: p.money, earned: p.earned, credits: Math.round(p.credits), nitros: Math.round(p.nitros), alive: p.alive !== false,
         wins: Math.max(0, p.wins | 0), streak: Math.max(0, p.streak | 0), continued: !!p.continued });
     });
-    if (s.over) return null;
+    if (s.over && !allowOver) return null;
     s.raceNo = d.raceNo;
     if (num(d.form, -1, 1)) s.form = d.form;
     s.streak = d.streak | 0;

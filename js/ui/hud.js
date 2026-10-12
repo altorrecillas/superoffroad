@@ -10,6 +10,7 @@ import { paintOf } from '../game/liveries.js';
 // dark text on light paint
 const inkOn = (css) => { const n = parseInt(css.slice(1), 16); return ((n >> 16) * 0.3 + ((n >> 8) & 255) * 0.59 + (n & 255) * 0.11) > 150 ? '#111' : '#fff'; };
 import { fmtMoney } from '../game/session.js';
+import { mine } from '../sim/race.js';
 import { ARENA } from '../sim/track.js';
 import { medalTimes, medalFor, medalRank, medalIcon, MEDALS, MEDAL_NAME } from '../game/medals.js';
 
@@ -33,9 +34,9 @@ export class HUD {
     this.session = session;
     const cols = TRUCKS.map((d) => race.racers.find((r) => r.entry.truckId === d.id)).filter(Boolean);
     this.cols = cols;
-    const cell = (r, kind) => { const css = paintOf(r.entry.truckId, r.entry.livery).css; return `<div class="cell ${r.human ? 'me' : ''}" data-k="${kind}${r.i}" style="background:${css}${r.human ? '' : 'cc'};color:${inkOn(css)}">0</div>`; };
-    const solo = race.racers.filter((r) => r.human).length === 1;
-    const me = race.racers.find((r) => r.human);
+    const cell = (r, kind) => { const css = paintOf(r.entry.truckId, r.entry.livery).css; return `<div class="cell ${mine(r) ? 'me' : ''}" data-k="${kind}${r.i}" style="background:${css}${mine(r) ? '' : 'cc'};color:${inkOn(css)}">0</div>`; };
+    const solo = race.racers.filter(mine).length === 1;
+    const me = race.racers.find(mine);
     const html = `
       <div class="hud-top">
         <div class="hud-board${solo ? ' solo' : ''}">
@@ -70,10 +71,11 @@ export class HUD {
     this.me = solo ? me : null;
     // a marker over each human truck ("TÚ" alone, 1P/2P/3P when sharing the screen)
     const tags = this.el.querySelector('.tags');
-    this.tags = race.racers.filter((r) => r.human).map((r) => {
+    // (the other player of a two-phone race gets its number: 1P or 2P)
+    this.tags = race.racers.filter((r) => mine(r) || r.remote).map((r) => {
       const d = paintOf(r.entry.truckId, r.entry.livery);
       const ink = inkOn(d.css);
-      const t = h(`<div class="ptag start" style="--c:${d.css};--t:${ink}"><b>${solo ? 'TÚ' : `${r.entry.player + 1}P`}</b></div>`);
+      const t = h(`<div class="ptag start${mine(r) ? '' : ' other'}" style="--c:${d.css};--t:${ink}"><b>${solo && mine(r) ? 'TÚ' : `${r.entry.player + 1}P`}</b></div>`);
       tags.appendChild(t);
       return { r, el: t, shown: null };
     });
@@ -168,7 +170,7 @@ export class HUD {
     }
     // closing time after the winner crosses the line
     const tl = race.timeLeft;
-    const showTl = tl != null && tl < 20 && race.racers.some((r) => r.human && !r.finished);
+    const showTl = tl != null && tl < 20 && race.racers.some((r) => mine(r) && !r.finished);
     if (showTl && !this.tlEl) { this.tlEl = h('<div class="toast small warn" style="position:absolute;left:50%;transform:translateX(-50%);bottom:12%;animation:none"></div>'); this.el.appendChild(this.tlEl); }
     if (this.tlEl) { if (showTl) this.tlEl.textContent = `FIN DE CARRERA EN ${Math.ceil(tl)}`; else { this.tlEl.remove(); this.tlEl = null; } }
     // wrong way warning for player 1
@@ -181,13 +183,13 @@ export class HUD {
   handle(events) {
     const race = this.race;
     if (!race) return;
-    const humans = race.racers.filter((r) => r.human);
+    const humans = race.racers.filter(mine);
     const multi = humans.length > 1;
     for (const ev of events) {
       const r = race.racers[ev[1]];
       if (!r) continue;
-      const who = multi && r.human ? `${r.entry.player + 1}P ` : '';
-      if (ev[0] === 'lap' && r.human) {
+      const who = multi && mine(r) ? `${r.entry.player + 1}P ` : '';
+      if (ev[0] === 'lap' && mine(r)) {
         // the lap just done, and whether it was the best of the race so far
         const lt = ev[3], best = lt && ev[2] >= 2 && Math.abs(lt - r.bestLap) < 1e-6;
         let tm = lt ? ` <span class="lt${best ? ' best' : ''}">${fmtTime(lt)}</span>` : '';
@@ -198,12 +200,12 @@ export class HUD {
         }
         if (ev[2] === race.laps - 1) this.ui.toast(`${who}¡Última vuelta!${tm}`, 'warn', 1900);
         else this.ui.toast(`${who}Vuelta ${ev[2] + 1}${tm}`, 'small', 1700);
-      } else if (ev[0] === 'pickup' && r.human) {
+      } else if (ev[0] === 'pickup' && mine(r)) {
         if (ev[2] === 'money') this.ui.toast(`${who}+${fmtMoney(ev[3])}`, 'money small', 1100);
         else this.ui.toast(`${who}Nitro +1`, 'nitro small', 1000);
       } else if (ev[0] === 'finish') {
-        if (r.human && !multi) this._finishBanner(r, ev[2]);
-        else if (r.human) this.ui.toast(ev[2] === 1 ? `${who}¡Ganador!` : `${who}${ev[2]}º puesto`, ev[2] === 1 ? 'money' : '', 2600);
+        if (mine(r) && !multi) this._finishBanner(r, ev[2]);
+        else if (mine(r)) this.ui.toast(ev[2] === 1 ? `${who}¡Ganador!` : `${who}${ev[2]}º puesto`, ev[2] === 1 ? 'money' : '', 2600);
         else if (ev[2] === 1 && !humans.some((x) => x.finished)) this.ui.toast(`${r.entry.short || r.entry.name} gana`, 'small warn', 2200);
       }
     }
@@ -320,11 +322,11 @@ export class HUD {
     // rivals as dots, the player on top as an arrow along the heading
     for (const pass of [0, 1]) {
       for (const r of race.racers) {
-        if ((pass === 1) !== r.human) continue;
+        if ((pass === 1) !== mine(r)) continue;
         const t = r.truck, x = (t.x - ARENA.x0) * k, y = (t.z - ARENA.z0) * k;
         g.fillStyle = paintOf(r.entry.truckId, r.entry.livery).css;
-        g.lineWidth = (r.human ? 1.6 : 1) * dpr;
-        if (r.human) {
+        g.lineWidth = (mine(r) ? 1.6 : 1) * dpr;
+        if (mine(r)) {
           const s = 6 * dpr;
           g.save(); g.translate(x, y); g.rotate(t.h);
           g.beginPath(); g.moveTo(s, 0); g.lineTo(-s * 0.7, s * 0.7); g.lineTo(-s * 0.3, 0); g.lineTo(-s * 0.7, -s * 0.7); g.closePath();

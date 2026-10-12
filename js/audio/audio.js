@@ -3,6 +3,7 @@
 
 import * as THREE from 'three';
 import { engineLoop, noiseLoop, crowdLoop, oneShot } from './synth.js';
+import { mine } from '../sim/race.js';
 
 const ENGINE_RPM = [1000, 2800, 5200];
 const BUGGY_REV = 1.3;
@@ -234,9 +235,9 @@ export class Audio {
     const loops = ENGINE_RPM.map((rpm, i) => this._loop(this.buffers[pre + i] || this.buffers['eng' + i], filt, 0));
     const skid = this._loop(this.buffers.skid, out, 0);
     const roll = this._loop(this.buffers.roll, out, 0);
-    const water = r.human ? this._loop(this.buffers.water, out, 0) : null;
+    const water = mine(r) ? this._loop(this.buffers.water, out, 0) : null;
     const flame = this._loop(this.buffers.flame, out, 0);
-    return { r, out, pan, filt, eng, loops, skid, roll, water, flame, rpm: 900, gear: 0, human: r.human, wasWater: false, bright: pre === 'beng' ? 1.35 : 1 };
+    return { r, out, pan, filt, eng, loops, skid, roll, water, flame, rpm: 900, gear: 0, human: mine(r), wasWater: false, bright: pre === 'beng' ? 1.35 : 1 };
   }
   // the race leaves the screen (shop, podium): its engines and its rain fade out and
   // the crowd goes back to the murmur of the menus (the next race brings its own)
@@ -326,7 +327,7 @@ export class Audio {
     const cam = this.camera;
     for (const ev of events) {
       const r = race.racers[ev[1]];
-      const human = r && r.human;
+      const human = mine(r);
       const vol = human ? 1 : 0.55;
       const t = r && r.truck;
       switch (ev[0]) {
