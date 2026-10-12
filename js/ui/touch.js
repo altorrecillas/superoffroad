@@ -1,6 +1,7 @@
 // On-screen controls for phones and tablets (player 1).
 // 'buttons': left/right steering buttons, gas and nitro on the right.
 // 'stick':   a joystick that points the truck where you push (gas included).
+// 'tilt':    steer by turning the phone like a wheel; gas, brake and nitro buttons.
 
 import { h } from './ui.js';
 import { safeInsets } from '../core/device.js';
@@ -32,11 +33,81 @@ export class Touch {
     this.camera = null;
     this.onPause = null;
     window.addEventListener('resize', () => this.layout());
+    // tilt: the gravity vector in screen coordinates gives the phone's roll. The sensor
+    // is only listened to while INCLINAR is the control, chosen in the options
+    this.tilt = { roll: 0, neutral: null, seen: false, t: 0 };
+    this._onMotion = (e) => this._motion(e);
+    this._listening = false;
+    this.tiltLost = false;
+    if (this.mode === 'tilt') this._resumeTilt();
   }
 
-  setMode(m) { if (m === this.mode) return; this.mode = m; if (this.visible) { this.show(false); this.show(true); } }
+  // the motion sensor's permission (the iPhone's question; Chrome answers it with the
+  // site's setting, without asking)
+  get tiltAsks() { const D = window.DeviceMotionEvent; return !!(D && typeof D.requestPermission === 'function'); }
+
+  // asked from the tap that chooses INCLINAR in the options: the only place the
+  // iPhone shows its question
+  requestTilt() {
+    const D = window.DeviceMotionEvent;
+    if (this.tiltAsks) return D.requestPermission().then((r) => r === 'granted').catch(() => false);
+    return Promise.resolve(!!D);
+  }
+
+  // INCLINAR chosen on an earlier visit. Asked without a tap, the iPhone never shows
+  // the question: it only says yes if it still remembers the permission. If it has
+  // forgotten it, the race starts with the buttons and says where to turn it back on
+  _resumeTilt() {
+    if (!this.tiltAsks) { this._listen(true); return; }
+    window.DeviceMotionEvent.requestPermission()
+      .then((r) => { if (r === 'granted' && this.mode === 'tilt') this._listen(true); else this.tiltLost = this.mode === 'tilt'; })
+      .catch(() => { this.tiltLost = this.mode === 'tilt'; });
+  }
+
+  _listen(on) {
+    if (on === this._listening) return;
+    this._listening = on;
+    if (on) {
+      Object.assign(this.tilt, { seen: false, neutral: null, t: 0, warned: false });
+      window.addEventListener('devicemotion', this._onMotion);
+    } else window.removeEventListener('devicemotion', this._onMotion);
+  }
+
+  _motion(e) {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null || a.y == null) return;
+    const ang = ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0) * Math.PI / 180;
+    const sx = a.x * Math.cos(ang) - a.y * Math.sin(ang), sy = a.x * Math.sin(ang) + a.y * Math.cos(ang);
+    if (Math.hypot(sx, sy) < 2.5) return; // lying almost flat: no clear roll
+    const roll = Math.atan2(-sx, sy); // the phone turned clockwise -> positive (right)
+    const T = this.tilt;
+    // smooth the sensor noise a little (wrap-safe)
+    const d = Math.atan2(Math.sin(roll - T.roll), Math.cos(roll - T.roll));
+    T.roll = T.seen ? T.roll + d * 0.35 : roll;
+    T.seen = true;
+    if (T.neutral == null) T.neutral = T.roll;
+  }
+  // hold the phone as you like: this is the straight-ahead position (race countdown)
+  calibrate() { if (this.tilt.seen) this.tilt.neutral = this.tilt.roll; }
+
+  // INCLINAR with the permission just given (it may already be the mode, forgotten)
+  tiltOn() { this.tiltLost = false; this._listen(true); this.setMode('tilt'); }
+
+  setMode(m) {
+    if (m === this.mode) return;
+    this.mode = m;
+    this.tiltLost = false;
+    this._listen(m === 'tilt');
+    if (this.visible) { this.show(false); this.show(true); }
+  }
 
   show(on) {
+    // INCLINAR but the phone forgot the sensor's permission: the buttons for now (the
+    // question only comes from the options)
+    if (on && this.enabled && this.mode === 'tilt' && this.tiltLost) {
+      this.mode = 'buttons'; this.tiltLost = false; this._listen(false);
+      if (this.onNoTilt) this.onNoTilt('perm');
+    }
     this.visible = on && this.enabled;
     this.root.classList.toggle('on', this.visible);
     this.state.active = this.visible;
@@ -45,7 +116,20 @@ export class Touch {
     if (!this.visible) return;
     const btn = (cls, icon, label = '') => { const b = h(`<div class="tbtn ${cls}">${ICON[icon]}${label ? `<span>${label}</span>` : ''}</div>`); this.root.appendChild(b); return b; };
     this.els = {};
-    if (this.mode === 'stick') {
+    if (this.mode === 'tilt') {
+      // both thumbs free: gas and nitro on one side, brake and nitro on the other
+      this.els.gas = this.opt.autoGas ? btn('nitro', 'nitro', 'NITRO') : btn('gas', 'gas', 'GAS');
+      this.els.nitro = this.opt.autoGas ? null : btn('nitro', 'nitro', 'NITRO');
+      this.els.brake = btn('brake', 'brake', 'FRENO');
+      this.els.nitro2 = btn('nitro nitro2', 'nitro', 'NITRO');
+      this.els.tilt = h('<div class="ttilt"><b></b><i></i></div>');
+      this.root.appendChild(this.els.tilt);
+      if (this.opt.autoGas) this._hold(this.els.gas, (v) => { if (v) this.state.nitroLatch = true; });
+      else this._hold(this.els.gas, (v) => (this.state.gas = v));
+      this._hold(this.els.brake, (v) => (this.state.brake = v));
+      this.tilt.neutral = this.tilt.seen ? this.tilt.roll : null;
+      this.tilt.t = 0;
+    } else if (this.mode === 'stick') {
       const st = h('<div class="tstick"><i></i></div>');
       this.root.appendChild(st);
       this.els.stick = st;
@@ -88,7 +172,15 @@ export class Touch {
       if (!el) return;
       Object.assign(el.style, { width: size + 'px', height: size + 'px', left: ((mirror ? W - x - size : x) + si.left) + 'px', top: y + 'px' });
     };
-    if (this.mode === 'stick') {
+    if (this.mode === 'tilt') {
+      place(this.els.brake, pad, H - s * 1.1 - pad, s * 1.1);
+      const n2 = s * 0.86;
+      place(this.els.nitro2, pad + (s * 1.1 - n2) / 2, H - s * 1.1 - pad - Math.max(10, pad * 0.75) - n2, n2);
+      place(this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
+      place(this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
+      const tw = Math.min(W * 0.34, 260);
+      Object.assign(this.els.tilt.style, { width: tw + 'px', left: (si.left + (W - tw) / 2) + 'px', top: (H - pad - 18) + 'px' });
+    } else if (this.mode === 'stick') {
       const ss = s * 1.7;
       place(this.els.stick, pad + 10, H - ss - pad, ss);
       place(this.els.nitro, W - s * 1.15 - pad, H - s * 1.15 - pad, s * 1.15);
@@ -167,9 +259,11 @@ export class Touch {
     el.addEventListener('pointercancel', up);
   }
 
-  // stick direction is relative to the screen: convert with the camera
-  update() {
-    if (!this.visible || this.mode !== 'stick') return;
+  // stick direction is relative to the screen: convert with the camera; tilt steering
+  update(dt = 0) {
+    if (!this.visible) return;
+    if (this.mode === 'tilt') return this._tiltSteer(dt);
+    if (this.mode !== 'stick') return;
     const v = this.stickVec;
     if (!v || !this.camera) { this.state.targetHeading = null; this.state.gas = 0; return; }
     const e = this.camera.matrixWorld.elements;
@@ -179,5 +273,23 @@ export class Touch {
     const wx = rx * v[0] - fx * v[1], wz = rz * v[0] - fz * v[1];
     this.state.targetHeading = Math.atan2(wz, wx);
     this.state.gas = v[2] > 0.55 ? 1 : 0.6;
+  }
+
+  _tiltSteer(dt) {
+    const T = this.tilt, el = this.els.tilt;
+    T.t += dt;
+    if (!T.seen) {
+      this.state.steer = 0;
+      // no sensor at all (a computer): say so, keep the buttons
+      if (T.t > 2 && !T.warned && this.onNoTilt) { T.warned = true; this.onNoTilt('sensor'); }
+      return;
+    }
+    if (T.neutral == null) T.neutral = T.roll;
+    const deg = (Math.atan2(Math.sin(T.roll - T.neutral), Math.cos(T.roll - T.neutral)) * 180) / Math.PI;
+    const dead = 2;
+    const v = Math.abs(deg) < dead ? 0 : Math.max(-1, Math.min(1, (deg - Math.sign(deg) * dead) / 22));
+    this.state.steer = v;
+    this.state.analog = true;
+    if (el) el.querySelector('i').style.left = `${50 + v * 46}%`;
   }
 }

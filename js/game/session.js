@@ -2,6 +2,7 @@
 // CPU difficulty curve, prizes and the high-score table.
 
 import { TRUCKS, truckDef } from './drivers.js';
+import { paintOf } from './liveries.js';
 import { SEASONS } from '../sim/tracks.js';
 
 export const PRIZES = [100000, 90000, 80000, 70000];
@@ -39,6 +40,14 @@ export const DIFFICULTY = {
 };
 export const DIFF_ORDER = ['easy', 'normal', 'hard', 'arcade'];
 
+// The championship goes in cups of four races: points for all four drivers, and at
+// the end of each cup a podium ceremony with a bonus for the players on it
+export const CUP_SIZE = 4;
+export const CUP_POINTS = [10, 6, 4, 3];
+export const CUP_BONUS = [150000, 75000, 40000, 0];
+const CUP_NAMES = ['COPA DEL POLVO', 'COPA DEL BARRO', 'COPA DE LOS SALTOS', 'COPA DE LOS FOCOS', 'COPA DEL DESIERTO', 'COPA DEL VOLCÁN', 'COPA DE LOS LAGARTOS', 'COPA IRONMAN'];
+export const cupName = (n) => CUP_NAMES[n % CUP_NAMES.length] + (n >= CUP_NAMES.length ? ` ${Math.floor(n / CUP_NAMES.length) + 1}` : '');
+
 const LS_SCORES = 'sor.highscores.v1';
 
 export class Session {
@@ -51,10 +60,12 @@ export class Session {
     // adaptive levels (Novato, Piloto): the rivals follow the player's form, sharper
     // after easy wins, a little softer after heavy defeats
     this.form = 0;
+    this.cup = { no: 0, race: 0, points: {} };
     this.players = players.map((p, i) => ({
       index: i,
       truckId: p.truckId,
       vehicle: p.vehicle || 'truck',
+      livery: p.livery || 'team',
       name: p.name || `JUGADOR ${i + 1}`,
       money: 0,
       earned: 0,
@@ -69,9 +80,10 @@ export class Session {
   get humans() { return this.players.filter((p) => p.alive); }
 
   currentTrack() {
-    if (this.free) return { id: this.free.id, reverse: this.free.reverse, time: this.free.time };
+    if (this.free) return { id: this.free.id, reverse: this.free.reverse, time: this.free.time, rain: !!this.free.rain };
     const [id, reverse] = this.rotation[this.raceNo % this.rotation.length];
-    return { id, reverse };
+    // it rains on one race in five: the 4th, the 9th, the 14th...
+    return { id, reverse, rain: this.raceNo % 5 === 3 };
   }
   get lap() { return Math.floor(this.raceNo / this.rotation.length); } // completed seasons
 
@@ -125,12 +137,12 @@ export class Session {
       const def = truckDef(p.truckId);
       used.add(def.id);
       out.push({
-        truckId: def.id, vehicle: p.vehicle, name: p.name, short: p.name, human: true, player: p.index,
+        truckId: def.id, vehicle: p.vehicle, livery: p.livery, name: p.name, short: p.name, human: true, player: p.index,
         upgrades: { ...p.upgrades }, nitros: p.nitros,
         ai: { skill: 0.5, aggression: 0 },
       });
     }
-    if (this.free && this.free.trial) { out.forEach((e, i) => (e.slot = i)); return out; } // time trial: alone on the track
+    if (this.free && (this.free.trial || this.free.tutorial)) { out.forEach((e, i) => (e.slot = i)); return out; } // time trial, tutorial: alone on the track
     for (const def of TRUCKS) {
       if (used.has(def.id)) continue;
       const s = this.cpuSetup(def);
@@ -151,7 +163,7 @@ export class Session {
   // opts.assist: the strongest steering assist used in the race (0..2)
   applyResults(race, opts = {}) {
     const rows = race.finishOrder.map((r) => ({
-      truckId: r.entry.truckId, name: r.entry.name, human: r.human, player: r.entry.player,
+      truckId: r.entry.truckId, name: r.entry.name, short: r.entry.short, vehicle: r.entry.vehicle || 'truck', livery: r.entry.livery, css: paintOf(r.entry.truckId, r.entry.livery).css, human: r.human, player: r.entry.player,
       place: r.place, time: r.finished && !r.dnf ? r.finishTime : null, bestLap: r.bestLap, bags: r.money,
       ironman: !!r.entry.ironman,
     }));
@@ -173,6 +185,7 @@ export class Session {
       p.earned += prize + bags;
       p.nitros = r ? r.truck.nitros : p.nitros;
       if (row.place === 1) p.wins++;
+      p.streak = row.place === 1 ? (p.streak || 0) + 1 : 0; // wins in a row
       let lost = false;
       if (this.diff.rule === 'last') lost = row.place === 4;
       else if (this.diff.rule === 'ironman') lost = ironPlace < row.place;
@@ -180,8 +193,30 @@ export class Session {
       if (lost) p.credits--;
       out.players.push({ index: p.index, prize, bags, lost, credits: p.credits, place: row.place, mult: k });
     }
+    if (!this.free) out.cup = this._cupPoints(rows, this.prizeMult(opts.assist || 0));
     this.raceNo++;
     return out;
+  }
+
+  // cup points of this race; at the end of the cup the standings and the bonuses
+  _cupPoints(rows, k) {
+    const C = this.cup;
+    for (const r of rows) C.points[r.truckId] = (C.points[r.truckId] || 0) + (CUP_POINTS[r.place - 1] || 0);
+    C.race++;
+    const standings = rows.map((r) => ({ truckId: r.truckId, name: r.name, short: r.short, vehicle: r.vehicle, livery: r.livery, css: r.css, human: r.human, player: r.player, points: C.points[r.truckId] || 0, last: r.place }))
+      .sort((a, b) => b.points - a.points || a.last - b.last);
+    const cup = { no: C.no, name: cupName(C.no), race: C.race, of: CUP_SIZE, standings, done: C.race >= CUP_SIZE };
+    if (cup.done) {
+      standings.forEach((st, i) => {
+        if (!st.human) return;
+        const p = this.players[st.player];
+        st.bonus = Math.round(((CUP_BONUS[i] || 0) * k) / 1000) * 1000;
+        p.money += st.bonus;
+        p.earned += st.bonus;
+      });
+      this.cup = { no: C.no + 1, race: 0, points: {} };
+    }
+    return cup;
   }
 
   // the best player's margin at the line moves the form: winning by more than

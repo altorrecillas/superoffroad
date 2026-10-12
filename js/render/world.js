@@ -13,6 +13,7 @@ import { FX } from './fx.js';
 import { buildWater } from './water.js';
 import { buildProps, PickupViews, loadPropsTemplate } from './props.js';
 import { truckDef } from '../game/drivers.js';
+import { paintOf } from '../game/liveries.js';
 import { ghostAt } from '../game/ghost.js';
 import { wrapAngle, clamp, lerp } from '../sim/util.js';
 import { TRUCK } from '../sim/truck.js';
@@ -91,6 +92,46 @@ function guideTexture() {
   return _guideTex;
 }
 
+// Rain: drops falling in two layers drawn as streaks, animated on the GPU: one over
+// the whole stadium (the overhead views) and a denser one around the camera (close-ups)
+function rainLayer(n, box, near) {
+  const seed = new Float32Array(n * 2 * 3), end = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const sx = Math.random(), sy = Math.random(), sz = Math.random();
+    for (let k = 0; k < 2; k++) { const v = i * 2 + k; seed[v * 3] = sx; seed[v * 3 + 1] = sy; seed[v * 3 + 2] = sz; end[v] = k; }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 3));
+  geo.setAttribute('aEnd', new THREE.BufferAttribute(end, 1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uCenter: { value: new THREE.Vector3(0, box[1] / 2, 0) }, uBox: { value: new THREE.Vector3(...box) },
+      uLen: { value: near ? 0.9 : 1.7 }, uAlpha: { value: near ? 0.42 : 0.3 }, uColor: { value: new THREE.Color(0.75, 0.8, 0.88) } },
+    vertexShader: `attribute vec3 aSeed; attribute float aEnd; uniform float uTime, uLen; uniform vec3 uCenter, uBox; varying float vA;
+      void main(){
+        const float FALL = 24.0; const vec2 WIND = vec2(2.2, 0.8);
+        vec3 p = aSeed * uBox;
+        float y = mod(p.y - uTime * FALL, uBox.y);
+        vec2 xz = mod(p.xz + WIND * (uBox.y - y) / FALL - uCenter.xz + uBox.xz * 0.5, uBox.xz) - uBox.xz * 0.5 + uCenter.xz;
+        vec3 w = vec3(xz.x, uCenter.y - uBox.y * 0.5 + y, xz.y);
+        w -= normalize(vec3(WIND.x, -FALL, WIND.y)) * aEnd * uLen; // the tail, above
+        vA = 1.0 - aEnd * 0.85;
+        gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+      }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uAlpha; varying float vA;
+      void main(){ gl_FragColor = vec4(uColor, uAlpha * vA);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false,
+  });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.frustumCulled = false;
+  lines.renderOrder = 6;
+  lines.visible = false;
+  return lines;
+}
+
 export class RaceWorld {
   constructor(view) {
     this.view = view;
@@ -117,17 +158,20 @@ export class RaceWorld {
   }
 
   // ------------------------------------------------------------ track
-  loadTrack(id, reverse, timeName) {
+  loadTrack(id, reverse, timeName, rain = false) {
     const def = trackById(id);
     this.disposeTrack();
     const t0 = performance.now();
     const track = buildTrack(def, { reverse });
     this.track = track;
     const time = timeName || def.time || 'day';
-    this.view.setTime(time);
+    this.view.setTime(time, rain);
     this.timeName = time;
+    this.raining = !!rain;
     this.terrain = buildTerrain(track, { marksSize: this.view.q.marks, hiq: this.view.qualityName === 'high', volcano: def.volcano, renderer: this.view.renderer });
     this.terrain.userData.uniforms.uLava.value = time === 'night' ? 1 : time === 'sunset' ? 0.55 : 0.28;
+    this.terrain.userData.uniforms.uRain.value = rain ? 1 : 0;
+    this._setRain(rain, time);
     this.barriers = buildBarriers(track);
     this.water = buildWater(track);
     this.props = buildProps(track, def);
@@ -196,8 +240,8 @@ export class RaceWorld {
     this.race = race;
     for (const v of this.views) { this.scene.remove(v.root); v.dispose(); }
     this.views = race.racers.map((r) => {
-      const d = truckDef(r.entry.truckId);
-      const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet }, this.templates[r.entry.vehicle] || this.template);
+      const d = paintOf(r.entry.truckId, r.entry.livery);
+      const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet, finish: d.finish }, this.templates[r.entry.vehicle] || this.template);
       v.truckId = d.id;
       this.scene.add(v.root);
       v.setLights(this.timeName === 'night');
@@ -206,7 +250,7 @@ export class RaceWorld {
     for (const m of this.rings || []) if (m) { this.scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
     this.rings = race.racers.map((r) => {
       if (!r.human) return null;
-      const m = playerRing(truckDef(r.entry.truckId).color);
+      const m = playerRing(paintOf(r.entry.truckId, r.entry.livery).color);
       this.scene.add(m);
       return m;
     });
@@ -218,6 +262,21 @@ export class RaceWorld {
     this.pickups.clear();
     this.leader = 0;
     if (this.guide) this.setGuide(-1); // the game turns it on for the player's races
+  }
+
+  _setRain(on, time) {
+    if (!this.rainLayers && on) {
+      const low = this.view.qualityName === 'low';
+      this.rainLayers = [rainLayer(low ? 1400 : 2600, [150, 46, 104], false), rainLayer(low ? 450 : 800, [34, 22, 34], true)];
+      for (const l of this.rainLayers) this.scene.add(l);
+    }
+    for (const l of this.rainLayers || []) {
+      l.visible = !!on;
+      // lit by the floodlights at night
+      l.material.uniforms.uColor.value.setRGB(...(time === 'night' ? [0.92, 0.94, 1] : time === 'sunset' ? [0.95, 0.82, 0.74] : [0.75, 0.8, 0.88]));
+    }
+    this.flash = 0;
+    this._lt = 6 + Math.random() * 8;
   }
 
   // the same field in a new simulation (a replay going back): keep the truck models
@@ -324,8 +383,8 @@ export class RaceWorld {
     this.ironState = null;
     for (const { g, kind } of list) {
       if (!g) continue;
-      const d = truckDef(g.c) || truckDef('red');
-      const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet }, this.templates[g.v] || this.template);
+      const d = paintOf(g.c || 'red', g.l);
+      const v = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet, finish: d.finish }, this.templates[g.v] || this.template);
       const mats = [], seen = new Map();
       const glow = kind === 'iron' ? [0.42, 0.3, 0.04] : [0.12, 0.2, 0.32];
       v.root.traverse((o) => {
@@ -474,7 +533,7 @@ export class RaceWorld {
         const lw = st.lastWheel[w];
         if (grounded && speed > 0.6 && race.state !== 'countdown' && !this._skipMarks) {
           const strength = 0.035 + Math.min(0.08, t.slip * 0.012) + t.throttle * 0.012;
-          marks.add(lw[0], lw[1], wx, wz, 0.42, strength, st.wet > 0.05 ? 0.06 * st.wet : 0);
+          marks.add(lw[0], lw[1], wx, wz, 0.42, strength, this.raining ? 0.07 : st.wet > 0.05 ? 0.06 * st.wet : 0);
         }
         lw[0] = wx; lw[1] = wz;
       }
@@ -485,7 +544,13 @@ export class RaceWorld {
         }
         return;
       }
-      if (grounded && !wet && speed > 4) {
+      // rain: the wheels throw spray instead of dust
+      if (this.raining && grounded && !wet && speed > 5 && Math.random() < dt * speed * 0.55 * fx.k) {
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const lx = -TRUCK.wheelX - 0.3, lz = side * TRUCK.wheelZ;
+        fx.splash(t.x + lx * c - lz * sn, track.heightAt(t.x + lx * c - lz * sn, t.z + lx * sn + lz * c) + 0.1, t.z + lx * sn + lz * c, t.vx * 0.5, t.vz * 0.5, clamp(speed / 45, 0.1, 0.32));
+      }
+      if (grounded && !wet && !this.raining && speed > 4) {
         st.dustAcc += dt * (speed * 0.9 + t.slip * 4) * fx.k;
         while (st.dustAcc > 1) {
           st.dustAcc -= 1;
@@ -504,7 +569,7 @@ export class RaceWorld {
           const side = Math.random() < 0.5 ? -1 : 1;
           const lx = -TRUCK.wheelX - 0.4, lz = side * TRUCK.wheelZ;
           const wx = t.x + lx * c - lz * sn, wz = t.z + lx * sn + lz * c;
-          fx.clod(wx, track.heightAt(wx, wz) + 0.3, wz, -c * (3 + Math.random() * 4) + (Math.random() - 0.5) * 2, 2 + Math.random() * 3, -sn * (3 + Math.random() * 4) + (Math.random() - 0.5) * 2, st.wet);
+          fx.clod(wx, track.heightAt(wx, wz) + 0.3, wz, -c * (3 + Math.random() * 4) + (Math.random() - 0.5) * 2, 2 + Math.random() * 3, -sn * (3 + Math.random() * 4) + (Math.random() - 0.5) * 2, this.raining ? 1 : st.wet);
         }
       }
       if (wet && speed > 2) {
@@ -543,11 +608,34 @@ export class RaceWorld {
     }
     this._updateGhost(dt);
     this._updateGuide();
+    this._updateRain(dt);
     fx.update(dt, (x, z) => track.heightAt(x, z));
     this.pickups.update(dt, race, track);
     this.stadium.update(dt, this.view.camera);
     this._camera(dt);
     this._screen(dt);
+  }
+
+  _updateRain(dt) {
+    if (!this.raining || !this.rainLayers) return;
+    const [arena, near] = this.rainLayers;
+    this._rainT = (this._rainT || 0) + dt;
+    arena.material.uniforms.uTime.value = this._rainT;
+    near.material.uniforms.uTime.value = this._rainT;
+    near.material.uniforms.uCenter.value.copy(this.view.camera.position);
+    // lightning now and then, the thunder follows
+    this._lt -= dt;
+    if (this._lt <= 0 && dt > 0) {
+      this._lt = 11 + Math.random() * 16;
+      this.flash = 1;
+      if (this.onThunder) this.onThunder();
+    }
+    const base = this.view.time ? this.view.time.hemiI : 1;
+    if (this.flash > 0) {
+      this.flash = Math.max(0, this.flash - dt * 2.6);
+      const k = this.flash * (0.55 + 0.45 * Math.abs(Math.sin(this.flash * 38)));
+      this.view.hemi.intensity = base + k * (this.timeName === 'night' ? 3.2 : 1.4);
+    } else if (this.view.hemi.intensity !== base) this.view.hemi.intensity = base;
   }
 
   // ------------------------------------------------------------ cameras
@@ -811,7 +899,7 @@ export class RaceWorld {
     const lap = Math.min(race.laps, Math.max(1, (race.order[0]?.lap ?? 0) + 1));
     g.fillText(race.state === 'countdown' ? 'READY' : `LAP ${lap}/${race.laps}`, W - 16, 24);
     race.order.forEach((r, i) => {
-      const d = truckDef(r.entry.truckId), y = 62 + i * 52;
+      const d = paintOf(r.entry.truckId, r.entry.livery), y = 62 + i * 52;
       g.fillStyle = i % 2 ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.1)';
       g.fillRect(10, y, W - 20, 46);
       g.fillStyle = d.css; g.fillRect(10, y, 12, 46);

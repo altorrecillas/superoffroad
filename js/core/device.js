@@ -38,6 +38,8 @@ export function canFullscreen() {
 export function isFullscreen() { return !!(document.fullscreenElement || document.webkitFullscreenElement) || standalone; }
 // iPhone Safari cannot put a page in fullscreen: only "Add to Home Screen" can
 export function needsHomeScreen() { return iPhone && !standalone; }
+// iPhone, iPod and iPad (an iPad says it is a Mac with a touch screen)
+export const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 let pending = false;
 export async function enterFullscreen(force = false) {

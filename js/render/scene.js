@@ -30,6 +30,13 @@ export const TIMES = {
   },
 };
 
+// the same light under a stormy sky: weak sun, grey sky and horizon, closer fog
+const RAINY = {
+  day: { sunI: 1.15, sun: 0xdde4ee, hemiSky: 0x9aa6b6, hemiGround: 0x4a3a30, hemiI: 1.0, skyTop: 0x4a525e, skyHorizon: 0x8d959f, fog: 0x8e969f, exposure: 0.95, envI: 0.75 },
+  sunset: { sunI: 1.25, sun: 0xffc59a, hemiSky: 0x7a7f96, hemiGround: 0x4a3226, hemiI: 0.85, skyTop: 0x3a3c52, skyHorizon: 0x9a7f78, fog: 0x8a7c78, exposure: 1.0, envI: 0.7 },
+  night: { sunI: 1.2, hemiI: 0.3, skyTop: 0x050608, skyHorizon: 0x0e1218, fog: 0x0b0e14, exposure: 1.08, envI: 0.25 },
+};
+
 const VignetteGrade = {
   uniforms: {
     tDiffuse: { value: null },
@@ -123,9 +130,11 @@ export class Scene3D {
     else if (q.aa === 'fxaa') this.composer.addPass(new FXAAPass());
   }
 
-  setTime(name) {
-    const t = TIMES[name] || TIMES.day;
+  setTime(name, rain = false) {
+    const base = TIMES[name] || TIMES.day;
+    const t = rain ? { ...base, ...(RAINY[name] || RAINY.day) } : base;
     this.time = t;
+    this.rain = !!rain;
     const d = new THREE.Vector3(...t.sunDir).normalize();
     this.sunDir = d;
     this.sun.color.set(t.sun);
@@ -134,7 +143,8 @@ export class Scene3D {
     this.hemi.groundColor.set(t.hemiGround);
     this.hemi.intensity = t.hemiI;
     this.renderer.toneMappingExposure = t.exposure;
-    this.scene.fog = new THREE.Fog(t.fog, 220, 700);
+    this.scene.fog = rain ? new THREE.Fog(t.fog, 110, 430) : new THREE.Fog(t.fog, 220, 700);
+    if (this.grade) { this.grade.uniforms.uSat.value = rain ? 0.94 : 1.14; this.grade.uniforms.uContrast.value = rain ? 1.03 : 1.06; }
     this._buildEnv(t);
     this._placeSun();
     this._spots(!!t.spots && this.qualityName !== 'low');

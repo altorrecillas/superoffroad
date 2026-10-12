@@ -15,7 +15,7 @@ export class Race {
     this.track = track;
     this.laps = opts.laps ?? LAPS;
     this.r = rng(opts.seed ?? 12345);
-    this.pickupsOn = opts.pickups ?? true;
+    this.pickupsOn = opts.pickups ?? true; // 'manual': none appear on their own (the tutorial places them)
     // catch-up (the arcade's DPA): ease off when ahead of the player / push when behind
     this.dpaDown = opts.dpaDown ?? opts.dpa ?? 0.07;
     this.dpaUp = opts.dpaUp ?? opts.dpa ?? 0.07;
@@ -27,8 +27,11 @@ export class Race {
     this.nextPickup = 3 + this.r() * 3;
     this.finishOrder = [];
     this.doneT = 0;
+    this.rain = !!opts.rain;
     this.racers = entries.map((e, i) => {
       const truck = new TruckSim(i, truckStats(e.upgrades, e.vehicle));
+      // a wet track: less grip and slower turning (the CPU drivers plan with these numbers)
+      if (this.rain) { truck.stats.grip *= 0.86; truck.stats.yaw *= 0.96; }
       truck.nitros = e.nitros ?? 10;
       const slot = track.grid[e.slot ?? i];
       truck.place(slot.x, slot.z, slot.h, track);
@@ -178,7 +181,7 @@ export class Race {
     if (this.state !== 'race') return;
     this.nextPickup -= dt;
     const live = this.pickups.filter((p) => !p.taken);
-    if (this.nextPickup <= 0 && live.length < 3) {
+    if (this.pickupsOn !== 'manual' && this.nextPickup <= 0 && live.length < 3) {
       this.nextPickup = 3.5 + this.r() * 4.5;
       const spot = randomTrackSpot(this.track, this.r, [...live, ...this.trucks]);
       if (spot) {

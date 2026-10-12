@@ -1,10 +1,13 @@
 // Service worker: the game keeps working without a connection once it has been
 // opened. Online it always fetches the current files (network first, so a new
 // version is never hidden behind an old copy); offline it serves the saved ones.
+// The page and its code (html, js, css) are revalidated with the server every time
+// (a cheap 304 when unchanged), so an update never mixes old and new modules while
+// the web host's own cache is still serving the previous copy of some of them.
 // After the first load the page sends the list of files it used, so everything the
 // game needs is saved straight away; the music is saved whole the first time it plays.
 
-const CACHE = 'sor-v1';
+const CACHE = 'sor-v1'; // kept: a new name would throw the saved copy away and download it all again
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
@@ -36,10 +39,12 @@ self.addEventListener('fetch', (e) => {
   else e.respondWith(networkFirst(req, e));
 });
 
+const CODE = /\.(?:html|js|mjs|css|json|webmanifest)$/;
 async function networkFirst(req, e) {
   const cache = await caches.open(CACHE);
   try {
-    const res = await fetch(req);
+    const url = new URL(req.url);
+    const res = await fetch(req, req.mode === 'navigate' || CODE.test(url.pathname) || url.pathname.endsWith('/') ? { cache: 'no-cache' } : undefined);
     if (res.ok && res.status === 200 && res.type === 'basic') e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
     return res;
   } catch (err) {

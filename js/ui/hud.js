@@ -5,6 +5,10 @@
 import * as THREE from 'three';
 import { h } from './ui.js';
 import { truckDef, TRUCKS } from '../game/drivers.js';
+import { paintOf } from '../game/liveries.js';
+
+// dark text on light paint
+const inkOn = (css) => { const n = parseInt(css.slice(1), 16); return ((n >> 16) * 0.3 + ((n >> 8) & 255) * 0.59 + (n & 255) * 0.11) > 150 ? '#111' : '#fff'; };
 import { fmtMoney } from '../game/session.js';
 import { ARENA } from '../sim/track.js';
 import { medalTimes, medalFor, medalRank, medalIcon, MEDALS, MEDAL_NAME } from '../game/medals.js';
@@ -29,7 +33,7 @@ export class HUD {
     this.session = session;
     const cols = TRUCKS.map((d) => race.racers.find((r) => r.entry.truckId === d.id)).filter(Boolean);
     this.cols = cols;
-    const cell = (r, kind) => `<div class="cell ${r.human ? 'me' : ''}" data-k="${kind}${r.i}" style="background:${truckDef(r.entry.truckId).css}${r.human ? '' : 'cc'};color:${r.entry.truckId === 'yellow' || r.entry.truckId === 'grey' ? '#111' : '#fff'}">0</div>`;
+    const cell = (r, kind) => { const css = paintOf(r.entry.truckId, r.entry.livery).css; return `<div class="cell ${r.human ? 'me' : ''}" data-k="${kind}${r.i}" style="background:${css}${r.human ? '' : 'cc'};color:${inkOn(css)}">0</div>`; };
     const solo = race.racers.filter((r) => r.human).length === 1;
     const me = race.racers.find((r) => r.human);
     const html = `
@@ -67,8 +71,8 @@ export class HUD {
     // a marker over each human truck ("TÚ" alone, 1P/2P/3P when sharing the screen)
     const tags = this.el.querySelector('.tags');
     this.tags = race.racers.filter((r) => r.human).map((r) => {
-      const d = truckDef(r.entry.truckId);
-      const ink = r.entry.truckId === 'yellow' || r.entry.truckId === 'grey' ? '#111' : '#fff';
+      const d = paintOf(r.entry.truckId, r.entry.livery);
+      const ink = inkOn(d.css);
       const t = h(`<div class="ptag start" style="--c:${d.css};--t:${ink}"><b>${solo ? 'TÚ' : `${r.entry.player + 1}P`}</b></div>`);
       tags.appendChild(t);
       return { r, el: t, shown: null };
@@ -120,7 +124,8 @@ export class HUD {
         this.set('lt', fmtTime(race.state === 'race' && !me.finished ? race.time - me.lapStart : me.lastLap || 0));
         this.set('best', me.bestLap ? fmtTime(me.bestLap) : '—');
       }
-      this.set('lapme', me.finished ? '¡META!' : `VUELTA ${Math.min(race.laps, Math.max(1, me.lap + 1))}/${race.laps}`);
+      const tut = this.session && this.session.free && this.session.free.tutorial; // the guided lap has no lap count
+      this.set('lapme', me.finished ? '¡META!' : tut ? `VUELTA ${Math.max(1, me.lap + 1)}` : `VUELTA ${Math.min(race.laps, Math.max(1, me.lap + 1))}/${race.laps}`);
       this.set('nitme', String(me.truck.nitros));
       const p = this.session ? this.session.players[me.entry.player] : null;
       this.set('money', fmtMoney((p ? p.money : 0) + me.money));
@@ -317,7 +322,7 @@ export class HUD {
       for (const r of race.racers) {
         if ((pass === 1) !== r.human) continue;
         const t = r.truck, x = (t.x - ARENA.x0) * k, y = (t.z - ARENA.z0) * k;
-        g.fillStyle = truckDef(r.entry.truckId).css;
+        g.fillStyle = paintOf(r.entry.truckId, r.entry.livery).css;
         g.lineWidth = (r.human ? 1.6 : 1) * dpr;
         if (r.human) {
           const s = 6 * dpr;

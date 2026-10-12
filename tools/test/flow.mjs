@@ -22,7 +22,9 @@ const shot = (n) => { console.log('stage', n, new Date().toISOString().slice(11,
 try {
   await waitState('title', 90000); await shot('1title');
   await page.keyboard.press('Enter'); await waitState('menu'); await shot('2menu');
-  await page.keyboard.press('Enter'); await page.waitForTimeout(400); await shot('3diff'); // difficulty: PILOTO
+  await page.keyboard.press('Enter'); await page.waitForTimeout(400);
+  if (await page.$('#ask')) { await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter'); await page.waitForTimeout(400); } // the tutorial offer: IR A CORRER
+  await shot('3diff'); // difficulty: PILOTO
   await page.keyboard.press('Enter'); await page.waitForTimeout(400); await shot('3select');
   await page.keyboard.press('ArrowRight'); await page.keyboard.press('Enter');
   await waitState('intro'); await page.waitForTimeout(1500); await shot('4intro');

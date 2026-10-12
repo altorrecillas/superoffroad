@@ -131,6 +131,11 @@ export function noiseLoop(ctx, kind, seconds = 2) {
   } else if (kind === 'water') {
     for (let i = 0; i < len; i++) x[i] = r() * (0.4 + 0.6 * Math.abs(Math.sin(i / sr * 23 + Math.sin(i / sr * 7) * 3)));
     biquad(x, sr, 'bp', 1600, 0.6); biquad(x, sr, 'lp', 5000);
+  } else if (kind === 'rain') {
+    // a steady hiss of drops, with closer ticks on the stands' roofs
+    let b = 0;
+    for (let i = 0; i < len; i++) { b = b * 0.6 + r() * 0.4; x[i] = b * 0.5 + (Math.abs(r()) > 0.9986 ? r() * 4 : 0); }
+    biquad(x, sr, 'hp', 400); biquad(x, sr, 'lp', 7000); biquad(x, sr, 'peak', 3000, 0.7, 3);
   } else if (kind === 'flame') {
     let b = 0;
     for (let i = 0; i < len; i++) { b = b * 0.92 + r() * 0.3; x[i] = b * (0.7 + 0.3 * Math.abs(r())); }

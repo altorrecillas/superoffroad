@@ -18,6 +18,8 @@ try {
   await waitState('title', 90000);
   await page.keyboard.press('Enter'); await waitState('menu');
   await page.keyboard.press('Enter'); await page.waitForTimeout(400); // 1 JUGADOR -> difficulty cards
+  if (await page.$('#ask')) { await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter'); await page.waitForTimeout(400); } // the tutorial offer: IR A CORRER
+
   // difficulty -> ARCADE (two cards to the right of PILOTO)
   await page.keyboard.press('ArrowRight'); await page.keyboard.press('ArrowRight'); await page.waitForTimeout(200);
   const dk = await page.evaluate(() => document.querySelector('#diff .dcard.focus')?.dataset.k);

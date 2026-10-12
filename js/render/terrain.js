@@ -134,6 +134,7 @@ export function buildTerrain(track, opts = {}) {
     uStart: { value: new THREE.Vector4(track.startLine.x, track.startLine.z, track.startLine.tx, track.startLine.tz) },
     uStartHW: { value: track.startLine.hw },
     tArrows: { value: arrowTex },
+    uRain: { value: 0 },
     // Volcano Valley: centre x/z, radius, rim fraction; lava glow (night 1, day ~0.3)
     uVolc: { value: opts.volcano ? new THREE.Vector4(opts.volcano.x, opts.volcano.z, opts.volcano.r, opts.volcano.rim ?? 0.2) : new THREE.Vector4() },
     uVolcOn: { value: opts.volcano ? 1 : 0 },
@@ -155,7 +156,7 @@ export function buildTerrain(track, opts = {}) {
       .replace('#include <aomap_fragment>', TERRAIN_AO)
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += tEmit;');
   };
-  mat.customProgramCacheKey = () => 'terrain-v5';
+  mat.customProgramCacheKey = () => 'terrain-v6';
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
@@ -245,6 +246,8 @@ uniform float uTrackLen;
 uniform vec4 uStart;
 uniform float uStartHW;
 uniform sampler2D tArrows;
+uniform float uRain;
+float tRainRough = 1.0;
 uniform vec4 uVolc;
 uniform float uVolcOn, uLava, uTime;
 varying vec3 vWPos;
@@ -344,6 +347,21 @@ const TERRAIN_COLOR = /* glsl */ `
   col = mix(col, cM.rgb * vec3(0.9, 0.8, 0.75), wetness * 0.85);
   // tyre marks: compacted darker dirt
   col = mix(col, col * vec3(0.62, 0.57, 0.53), clamp(mk.r, 0.0, 1.0) * 0.8);
+  // rain: the whole arena wet (darker and shinier), puddles in the low spots where the
+  // drops make rings
+  float pud = 0.0;
+  if (uRain > 0.0) {
+    float pn = tn(wp * 0.21 + 7.3) * 0.65 + tn(wp * 0.63 + 1.7) * 0.35;
+    pud = smoothstep(0.6, 0.7, pn) * onTrack * uRain;
+    col *= 1.0 - 0.3 * uRain;
+    col = mix(col, cM.rgb * vec3(0.55, 0.5, 0.48), pud * 0.85);
+    vec2 cell = floor(wp * 1.7);
+    vec2 f = fract(wp * 1.7) - 0.5;
+    float ph = fract(uTime * 1.25 + th(cell));
+    float ring = smoothstep(0.045, 0.0, abs(length(f) - ph * 0.48)) * (1.0 - ph);
+    col += vec3(0.5, 0.55, 0.6) * ring * pud * 0.35;
+    tRainRough = mix(0.36, 0.08, pud);
+  }
 
   // direction arrows painted on the track, worn by the tyres
   {
@@ -371,6 +389,7 @@ const TERRAIN_COLOR = /* glsl */ `
   tRough = mix(rL, rT, onTrack);
   tRough = mix(tRough, nM.b * 0.6, wetness);
   tRough = clamp(tRough - mk.r * 0.08, 0.2, 1.0);
+  tRough = mix(tRough, tRainRough, uRain * 0.75);
   vec2 dn = mix(nL.rg, nT.rg, onTrack) * 2.0 - 1.0;
   dn = mix(dn, (nM.rg * 2.0 - 1.0), wetness * 0.7);
   float gAmp = mix(0.9, 0.7, onTrack);

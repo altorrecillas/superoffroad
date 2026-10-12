@@ -60,6 +60,14 @@ export function loadTruckTemplate(kind = 'truck') {
   return templates[kind];
 }
 
+// how the body paint reflects (paint jobs of the garage)
+const FINISH = {
+  metal: { metalness: 0.75, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.14 },
+  matte: { metalness: 0.05, roughness: 0.74, clearcoat: 0 },
+  pearl: { metalness: 0.2, roughness: 0.24, clearcoat: 1, clearcoatRoughness: 0.12, iridescence: 0.55, iridescenceIOR: 1.35 },
+  chrome: { metalness: 1, roughness: 0.14, clearcoat: 0.6, clearcoatRoughness: 0.14 },
+};
+
 // livery texture: number plate for doors and roof
 function plateTexture(num, color, accent) {
   const c = document.createElement('canvas');
@@ -88,7 +96,8 @@ function plateTexture(num, color, accent) {
 
 export class TruckView {
   constructor(opts, template) {
-    const { color, accent = 0xf2f2f2, number = 1, helmet } = opts;
+    const { color, accent = 0xf2f2f2, number = 1, helmet, finish } = opts;
+    this.finish = FINISH[finish] || null;
     this.root = new THREE.Group();
     this.body = new THREE.Group();
     this.root.add(this.body);
@@ -148,7 +157,10 @@ export class TruckView {
       if (cache.has(m)) return cache.get(m);
       let out = m;
       const n = m.name || '';
-      if (/^Paint/.test(n)) { out = m.clone(); out.color.copy(this.color); }
+      if (/^Paint/.test(n)) {
+        out = m.clone(); out.color.copy(this.color);
+        if (this.finish) for (const k in this.finish) if (k in out) out[k] = this.finish[k];
+      }
       else if (/^Accent/.test(n)) { out = m.clone(); out.color.copy(this.accent); }
       else if (/^Helmet/.test(n)) { out = m.clone(); out.color.set(helmet ?? this.accent); }
       else if (/^Decal/.test(n)) {

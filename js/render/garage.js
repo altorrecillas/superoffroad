@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { TruckView } from './truckview.js';
-import { truckDef } from '../game/drivers.js';
+import { paintOf } from '../game/liveries.js';
 
 function canvasTex(w, h, draw, srgb = true) {
   const c = document.createElement('canvas');
@@ -124,10 +124,10 @@ export class Garage {
     this.t = 0;
   }
 
-  setTruck(truckId, kind = 'truck') {
+  setTruck(truckId, kind = 'truck', livery = 'team') {
     if (this.truck) { this.table.remove(this.truck.root); this.truck.dispose(); }
-    const d = truckDef(truckId);
-    this.truck = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet }, this.templates[kind] || this.templates.truck);
+    const d = paintOf(truckId, livery);
+    this.truck = new TruckView({ color: d.color, accent: d.accent, number: d.number, helmet: d.helmet, finish: d.finish }, this.templates[kind] || this.templates.truck);
     this.truck.root.position.y = 0.22;
     this.table.add(this.truck.root);
     this._still();

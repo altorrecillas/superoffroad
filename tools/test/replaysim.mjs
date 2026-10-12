@@ -24,7 +24,7 @@ for (let n = 0; n < RACES; n++) {
   const s = new Session([{ truckId: 'red' }, { truckId: 'blue', vehicle: 'buggy' }].slice(0, humans), ['easy', 'normal', 'hard', 'arcade'][n % 4]);
   s.raceNo = 3 + n;
   const entries = s.entries();
-  const opts = { seed: 1000 + n * 17, ...s.raceOpts(), laps: 3 };
+  const opts = { seed: 1000 + n * 17, ...s.raceOpts(), laps: 3, rain: n % 3 === 0 };
   const race = new Race(track, entries, opts);
   const rec = new ReplayRecorder(race, { track, entries, opts });
   const mine = race.racers.filter((r) => r.human);
@@ -68,7 +68,7 @@ for (let n = 0; n < RACES; n++) {
   const same = race.finishOrder.map((x) => `${x.i}:${x.finishTime.toFixed(4)}`).join(' ') === rp.finishOrder.map((x) => `${x.i}:${x.finishTime.toFixed(4)}`).join(' ');
   const ok = firstDiff < 0 && same;
   if (!ok) bad++;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${id}${reverse ? ' (inv.)' : ''} ${humans}P ${s.difficulty.padEnd(6)} assist ${assists[0] ? assists[0].level : 0} · ${rec.length} steps (${(rec.length / 120).toFixed(1)} s) · ${rec.marks.length} marks · resim ${ms.toFixed(0)} ms${firstDiff >= 0 ? ' · first difference at step ' + firstDiff : ''}${same ? '' : ' · different results'}`);
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${id}${reverse ? ' (inv.)' : ''}${opts.rain ? ' lluvia' : ''} ${humans}P ${s.difficulty.padEnd(6)} assist ${assists[0] ? assists[0].level : 0} · ${rec.length} steps (${(rec.length / 120).toFixed(1)} s) · ${rec.marks.length} marks · resim ${ms.toFixed(0)} ms${firstDiff >= 0 ? ' · first difference at step ' + firstDiff : ''}${same ? '' : ' · different results'}`);
 }
 console.log(bad ? `REPLAY FAIL (${bad})` : 'REPLAY OK');
 process.exit(bad ? 1 : 0);

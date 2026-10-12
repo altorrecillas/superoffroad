@@ -45,6 +45,7 @@ export class Audio {
       ...ENGINE_RPM.map((rpm, i) => () => (this.buffers['beng' + i] = engineLoop(ctx, rpm * BUGGY_REV, 11, 'flat4'))),
       () => (this.buffers.skid = noiseLoop(ctx, 'skid')), () => (this.buffers.roll = noiseLoop(ctx, 'roll')),
       () => (this.buffers.water = noiseLoop(ctx, 'water')), () => (this.buffers.flame = noiseLoop(ctx, 'flame', 1.5)),
+      () => (this.buffers.rain = noiseLoop(ctx, 'rain', 3)),
       () => (this.buffers.crowd = crowdLoop(ctx)),
       ...['thud', 'clank', 'land', 'splash', 'nitro', 'pickup', 'cash', 'beep', 'go', 'lap', 'horn', 'boom', 'move', 'ok', 'back', 'deny']
         .map((k) => () => (this.buffers[k] = oneShot(ctx, k))),
@@ -196,6 +197,22 @@ export class Audio {
     this.musicGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.25);
     this._musicSwap = setTimeout(() => this.musicEl.pause(), 1200);
     this.musicName = null;
+  }
+
+  // ------------------------------------------------------------------ weather
+  setRain(on) {
+    this.raining = !!on;
+    if (!this.ready || !this.buffers.rain) return;
+    if (!this.rainLoop && on) this.rainLoop = this._loop(this.buffers.rain, this.sfxBus, 0);
+    if (this.rainLoop) this.rainLoop.g.gain.setTargetAtTime(on ? 0.2 : 0, this.ctx.currentTime, 0.6);
+  }
+  // thunder after a lightning flash (the further, the later and the deeper)
+  thunder() {
+    const d = 0.6 + Math.random() * 1.8;
+    setTimeout(() => {
+      this.sfx('boom', { vol: 0.5, rate: 0.42 - d * 0.04, vary: 0.1 });
+      this.sfx('boom', { vol: 0.35, rate: 0.26, vary: 0.05 });
+    }, d * 1000);
   }
 
   // ------------------------------------------------------------------ race sounds

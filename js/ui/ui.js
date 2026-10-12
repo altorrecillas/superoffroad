@@ -125,6 +125,13 @@ export class UI {
     return nav;
   }
 
+  // back to a list navigated before, once a dialog opened over it closes
+  resume(nav) {
+    if (!nav || !this.screens.has(nav.screen)) return;
+    this.nav = nav;
+    nav.focus(nav.i, true);
+  }
+
   _ui(a) {
     const n = this.nav;
     if (!n || !this.screens.has(n.screen)) return;

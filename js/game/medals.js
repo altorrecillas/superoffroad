@@ -13,9 +13,9 @@ const LS = 'sor.medals.v1';
 const DT = 1 / 120;
 
 // Ironman's run: the ghost (same format as the player's) and its time
-export function ironmanRun(track, vehicle = 'truck', laps = 3, upgrades = { tires: 2, shocks: 2, accel: 2, speed: 2 }) {
-  const entries = [{ truckId: 'grey', vehicle, name: 'Ironman', human: true, player: 0, upgrades: { ...upgrades }, nitros: 10, slot: 0 }];
-  const race = new Race(track, entries, { seed: 1, laps, pickups: false });
+export function ironmanRun(track, vehicle = 'truck', laps = 3, upgrades = { tires: 2, shocks: 2, accel: 2, speed: 2 }, nitros = 10, rain = false) {
+  const entries = [{ truckId: 'grey', vehicle, name: 'Ironman', human: true, player: 0, upgrades: { ...upgrades }, nitros, slot: 0 }];
+  const race = new Race(track, entries, { seed: 1, laps, pickups: false, rain });
   race.autopilot = true;
   race.autopilotSkill = 1;
   const me = race.racers[0], rec = new GhostRecorder(me), lapT = [];

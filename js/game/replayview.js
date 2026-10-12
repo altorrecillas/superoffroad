@@ -7,6 +7,7 @@
 import { ReplayPlayer } from './replay.js';
 import { Director } from './director.js';
 import { truckDef } from './drivers.js';
+import { paintOf } from './liveries.js';
 import { trackById } from '../sim/tracks.js';
 import { fmtTime } from '../ui/hud.js';
 import { esc } from '../ui/ui.js';
@@ -355,8 +356,7 @@ export class ReplayView {
     if (this.shotIndex == null) third.classList.add('off');
     else {
       third.classList.remove('off');
-      const d = truckDef(r.entry.truckId);
-      third.querySelector('.chip').style.background = d.css;
+      third.querySelector('.chip').style.background = paintOf(r.entry.truckId, r.entry.livery).css;
       third.querySelector('.rp-pos').textContent = race.state === 'countdown' ? '' : `${r.finished ? r.place : r.pos || 1}º`;
       third.querySelector('.rp-name').textContent = this._name(r);
       third.classList.toggle('me', r.human);
@@ -371,7 +371,7 @@ export class ReplayView {
     const tb = el.querySelector('[data-a=truck]');
     const lk = this.lock != null ? race.racers[this.lock] : (this.cam === 'auto' ? null : race.racers[this._focus()]);
     tb.querySelector('b').textContent = lk ? this._name(lk) : 'TODOS';
-    tb.querySelector('.chip').style.background = lk ? truckDef(lk.entry.truckId).css : 'linear-gradient(90deg,#e3261f,#2a63f0,#f7c21b,#b9c1ca)';
+    tb.querySelector('.chip').style.background = lk ? paintOf(lk.entry.truckId, lk.entry.livery).css : 'linear-gradient(90deg,#e3261f,#2a63f0,#f7c21b,#b9c1ca)';
     el.classList.toggle('seeking', this.seekTo != null);
   }
 
@@ -475,7 +475,7 @@ export class ReplayView {
     if (!el || !ph) return;
     const r = this.race.racers[ph.index];
     const t = el.querySelector('[data-a=truck]');
-    t.querySelector('.chip').style.background = truckDef(r.entry.truckId).css;
+    t.querySelector('.chip').style.background = paintOf(r.entry.truckId, r.entry.livery).css;
     t.querySelector('b').textContent = this._name(r);
     el.querySelector('[data-a=lens] b').textContent = LENSES[ph.lens].n;
     el.querySelector('[data-a=filter] b').textContent = FILTER_NAME[ph.filter];
@@ -511,12 +511,13 @@ export class ReplayView {
       view.render(0);                   // read back within the same task: no preserveDrawingBuffer needed
       c = document.createElement('canvas');
       c.width = src.width; c.height = src.height;
-      const x = c.getContext('2d');
+      const x = c.getContext('2d', { willReadFrequently: true }); // the filters read the pixels back
       x.drawImage(src, 0, 0);
       this._filterPixels(x, c.width, c.height, this.photo.filter);
       this._signature(x, c.width, c.height);
     } catch (e) { console.warn('photo', e); g.ui.toast('No se ha podido hacer la foto', 'small warn', 1600); return; }
     g.audio.sfx('clank', { vol: 0.35, rate: 2.4, vary: 0 });
+    if (g.career) g.career.photo();
     const flash = document.createElement('div');
     flash.className = 'ph-flash';
     document.body.appendChild(flash);
