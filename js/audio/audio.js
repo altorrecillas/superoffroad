@@ -238,6 +238,18 @@ export class Audio {
     const flame = this._loop(this.buffers.flame, out, 0);
     return { r, out, pan, filt, eng, loops, skid, roll, water, flame, rpm: 900, gear: 0, human: r.human, wasWater: false, bright: pre === 'beng' ? 1.35 : 1 };
   }
+  // the race leaves the screen (shop, podium): its engines and its rain fade out and
+  // the crowd goes back to the murmur of the menus (the next race brings its own)
+  stopRace() {
+    if (!this.ready) return;
+    const old = this.trucks, now = this.ctx.currentTime;
+    this.trucks = [];
+    for (const t of old) t.out.gain.setTargetAtTime(0, now, 0.08);
+    setTimeout(() => old.forEach((t) => this._killTruck(t)), 600);
+    this.setRain(false);
+    this.excite = 0;
+    if (this.crowd) this.crowd.g.gain.setTargetAtTime(0.05, now, 0.4);
+  }
   // the same field in a new simulation (a replay going back): keep the voices
   rebind(race) { this.trucks.forEach((tv, i) => { if (race.racers[i]) tv.r = race.racers[i]; }); }
   _killTruck(t) {

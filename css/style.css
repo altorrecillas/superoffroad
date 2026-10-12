@@ -67,6 +67,10 @@ img { -webkit-user-drag: none; -webkit-touch-callout: none; }
 #ui #title { justify-content: space-between; background: linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0) 65%, rgba(0, 0, 0, 0.7) 100%); }
 #title .press { font-family: 'Russo', sans-serif; font-size: clamp(20px, 3vw, 32px); letter-spacing: 0.12em; text-shadow: 0 3px 8px #000; }
 #title .foot { display: flex; gap: 22px; font-size: clamp(16px, 2vw, 22px); opacity: 0.85; letter-spacing: 0.06em; flex-wrap: wrap; justify-content: center; }
+/* the game's version, small in the corner of the title and the main menu */
+#ui .screen .ver { position: absolute; right: calc(12px + var(--safe-r)); bottom: calc(5px + var(--safe-b)); font-size: 15px; line-height: 1; letter-spacing: 0.08em;
+  opacity: 0.55; pointer-events: none; text-shadow: 0 1px 3px #000; }
+#ui .screen .panel > .ver { right: 14px; bottom: 7px; } /* the menu: in its panel's corner (on a small phone the panel fills the screen) */
 
 .ios-tip { margin-top: 10px; padding: 5px 14px 3px; border-radius: 8px; background: rgba(10, 8, 7, 0.65); border: 1px solid var(--line); font-size: 16px; letter-spacing: 0.04em; text-align: center; max-width: 92vw; }
 .ios-tip b { color: var(--gold); font-weight: normal; }
@@ -86,6 +90,9 @@ img { -webkit-user-drag: none; -webkit-touch-callout: none; }
 .btn.disabled { opacity: 0.4; }
 .btn.gold-btn { border-color: rgba(255, 207, 58, 0.7); color: var(--gold); }
 .btn.primary { justify-content: center; background: linear-gradient(180deg, #ff4b2b, #b31512); border-color: #ff9c86; box-shadow: 0 4px 0 #5e0c08; }
+/* CONTINUAR (a saved championship): the button and, under it, where the game was left */
+.btn.cont-btn { flex-direction: column; gap: 0; line-height: 1.05; }
+.btn.cont-btn small { font-family: 'Teko', sans-serif; font-style: normal; font-size: 0.8em; letter-spacing: 0.06em; color: #ffe6a8; white-space: nowrap; }
 .row { display: flex; gap: 12px; align-items: center; }
 .hint-keys { font-size: 18px; opacity: 0.6; text-align: center; padding: 0 20px 14px; letter-spacing: 0.04em; }
 

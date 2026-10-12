@@ -53,7 +53,8 @@ const LS_SCORES = 'sor.highscores.v1';
 export class Session {
   constructor(players, difficulty = 'normal', tracks = 'all', free = null) {
     this.difficulty = DIFFICULTY[difficulty] ? difficulty : 'normal';
-    this.rotation = SEASONS[tracks] || SEASONS.all;
+    this.pack = SEASONS[tracks] ? tracks : 'all';
+    this.rotation = SEASONS[this.pack];
     this.free = free; // single race: { id, reverse, time, trial }
     this.diff = DIFFICULTY[difficulty] || DIFFICULTY.normal;
     this.raceNo = 0;
@@ -74,6 +75,8 @@ export class Session {
       credits: START_CREDITS,
       alive: true,
       wins: 0,
+      streak: 0, // wins in a row
+      continued: false, // went on with 3 more credits after a game over
     }));
   }
 
@@ -262,7 +265,67 @@ export class Session {
     p.money += CREDIT_CASH;
     return true;
   }
+
+  // the championship as plain data (the CONTINUAR of the main menu) and back
+  snapshot() {
+    return {
+      difficulty: this.difficulty, pack: this.pack, raceNo: this.raceNo, form: this.form, streak: this.streak || 0,
+      cup: this.cup, lastOrder: this.lastOrder || null,
+      players: this.players.map((p) => ({ ...p, upgrades: { ...p.upgrades } })),
+    };
+  }
+  // null when the data makes no sense (damaged, or from a format that no longer exists)
+  static restore(d) {
+    const num = (v, min, max) => typeof v === 'number' && isFinite(v) && v >= min && v <= max;
+    if (!d || !DIFFICULTY[d.difficulty] || !Array.isArray(d.players) || d.players.length < 1 || d.players.length > 3) return null;
+    if (!Number.isInteger(d.raceNo) || d.raceNo < 0) return null;
+    if (!d.players.every((p) => p && truckDef(p.truckId) && !truckDef(p.truckId).cpu.ironman && num(p.money, 0, 1e10) && num(p.earned, 0, 1e10)
+      && num(p.credits, -9, 99) && num(p.nitros, 0, 99) && p.upgrades && UPGRADES.every((u) => num(p.upgrades[u.id], 0, MAX_LEVEL)))) return null;
+    const s = new Session(d.players.map((p) => ({ truckId: p.truckId, vehicle: p.vehicle === 'buggy' ? 'buggy' : 'truck', livery: typeof p.livery === 'string' ? p.livery : 'team' })), d.difficulty, d.pack);
+    d.players.forEach((p, i) => {
+      const q = s.players[i];
+      for (const u of UPGRADES) q.upgrades[u.id] = Math.round(p.upgrades[u.id]);
+      Object.assign(q, { money: p.money, earned: p.earned, credits: Math.round(p.credits), nitros: Math.round(p.nitros), alive: p.alive !== false,
+        wins: Math.max(0, p.wins | 0), streak: Math.max(0, p.streak | 0), continued: !!p.continued });
+    });
+    if (s.over) return null;
+    s.raceNo = d.raceNo;
+    if (num(d.form, -1, 1)) s.form = d.form;
+    s.streak = d.streak | 0;
+    const c = d.cup;
+    if (c && Number.isInteger(c.no) && c.no >= 0 && Number.isInteger(c.race) && c.race >= 0 && c.race < CUP_SIZE && c.points && typeof c.points === 'object') {
+      const points = {};
+      for (const t of TRUCKS) if (num(c.points[t.id], 0, 1e4)) points[t.id] = c.points[t.id];
+      s.cup = { no: c.no, race: c.race, points };
+    }
+    if (Array.isArray(d.lastOrder)) s.lastOrder = d.lastOrder.filter((id) => truckDef(id));
+    return s;
+  }
 }
+
+// ------------------------------------------------------------------ saved game
+// The championship in progress is kept at every step so it can be continued after
+// leaving the game: before each race (at: 'race', that race starts again from the
+// grid), and once a race has counted and in the shop (at: 'shop', on to the shop; the
+// podium first if the race closed a cup). Free races, time trials and the tutorial
+// are single races and do not touch it.
+const LS_RUN = 'sor.run.v1';
+
+export function saveRun(session, at, podium = null) {
+  try { localStorage.setItem(LS_RUN, JSON.stringify({ v: 1, at, t: Date.now(), s: session.snapshot(), podium })); } catch (e) { /* storage full or off */ }
+}
+export function loadRun() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(LS_RUN)); } catch (e) { /* damaged */ }
+  if (!d) return null;
+  const session = d.v === 1 && (d.at === 'race' || d.at === 'shop') ? Session.restore(d.s) : null;
+  if (!session) { clearRun(); return null; }
+  const pd = d.podium;
+  const podium = d.at === 'shop' && pd && typeof pd.name === 'string' && Array.isArray(pd.standings) && pd.standings.length >= 3
+    && pd.standings.every((x) => x && truckDef(x.truckId) && Number.isFinite(x.points)) ? pd : null;
+  return { at: d.at, t: d.t, session, podium };
+}
+export function clearRun() { try { localStorage.removeItem(LS_RUN); } catch (e) { /* storage off */ } }
 
 // ------------------------------------------------------------------ high scores
 const DEFAULT_SCORES = [

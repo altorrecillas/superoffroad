@@ -45,6 +45,16 @@ const check = () => page.evaluate(() => {
     if (!el.offsetParent) continue;
     if (el.scrollWidth > el.clientWidth + 1) out.push(`TEXTO NO CABE "${el.textContent.trim().replace(/\s+/g, ' ').slice(0, 34)}" (${el.scrollWidth}>${el.clientWidth})`);
   }
+  // the version in the corner must not sit on anything of its screen
+  const hit = (a, b) => !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  const textBox = (el) => { const rg = document.createRange(); rg.selectNodeContents(el); return rg.getBoundingClientRect(); };
+  for (const v of document.querySelectorAll('#ui .screen .ver')) {
+    const r = v.getBoundingClientRect();
+    if (r.right > innerWidth || r.bottom > innerHeight) out.push('VERSIÓN FUERA DE LA PANTALLA');
+    const boxes = [...v.closest('.screen').querySelectorAll('.panel, .foot, .press, .ios-tip, .btn')].filter((o) => !o.contains(v) && o.offsetParent).map((o) => [o, o.getBoundingClientRect()]);
+    for (const t of v.closest('.screen').querySelectorAll('.hint-keys')) if (t.textContent.trim()) boxes.push([t, textBox(t)]);
+    for (const [o, b] of boxes) if (hit(r, b)) out.push(`VERSIÓN TAPA .${o.className.split(' ')[0]}`);
+  }
   return out;
 });
 const snap = async (name, fn, wait = 900) => {
@@ -57,7 +67,16 @@ const snap = async (name, fn, wait = 900) => {
 };
 await snap('01title', () => {});
 await snap('02menu', () => window.__game.toMenu());
-await snap('03options', () => { const g = window.__game; g.ui.hide('menu'); g.toOptions(() => {}); });
+// a saved championship (the longest cup name): CONTINUAR first, and the question
+// before a new championship replaces it
+await snap('02cont', () => {
+  const g = window.__game;
+  const p = { index: 0, truckId: 'red', vehicle: 'truck', livery: 'team', name: 'JUGADOR 1', money: 340000, earned: 1250000, upgrades: { tires: 2, shocks: 1, accel: 2, speed: 1 }, nitros: 12, credits: 2, alive: true, wins: 3 };
+  localStorage.setItem('sor.run.v1', JSON.stringify({ v: 1, at: 'shop', t: Date.now(), s: { difficulty: 'hard', pack: 'all', raceNo: 26, form: 0, streak: 0, cup: { no: 6, race: 2, points: {} }, lastOrder: null, players: [p] }, podium: null }));
+  g.ui.hide('menu'); g.toMenu();
+});
+await snap('02newrun', () => document.querySelector('#menu [data-a=p1]').click());
+await snap('03options', () => { const g = window.__game; g.ui.hide('newrun'); g.ui.hide('menu'); g.toOptions(() => {}); });
 await snap('03ctrl', () => document.querySelector('#options [data-k=touch]').click());
 await snap('04help', () => { const g = window.__game; g.ui.hide('ctrlpick'); g.ui.hide('options'); g.toHelp(() => {}); });
 await snap('05scores', () => { const g = window.__game; g.ui.hide('help'); g.toScores(() => {}); });
