@@ -36,8 +36,8 @@ const bad = {
   'no data': null,
   'unknown level': { ...base(), difficulty: 'zzz' },
   'no players': { ...base(), players: [] },
-  'four players': (() => { const d = base(); d.players = [0, 1, 2, 3].map(() => d.players[0]); return d; })(),
-  'Ironman as a player': (() => { const d = base(); d.players[0].truckId = 'grey'; return d; })(),
+  'five players': (() => { const d = base(); d.players = [0, 1, 2, 3, 4].map(() => d.players[0]); return d; })(),
+  'Ironman as a player (fewer than four)': (() => { const d = base(); d.players[0].truckId = 'grey'; return d; })(),
   'unknown truck': (() => { const d = base(); d.players[0].truckId = 'pink'; return d; })(),
   'negative money': (() => { const d = base(); d.players[0].money = -5; return d; })(),
   'money as text': (() => { const d = base(); d.players[0].money = '100'; return d; })(),
@@ -55,6 +55,27 @@ const r = Session.restore(d);
 check(r && r.cup.no === 0 && r.cup.race === 0 && r.form === 0 && r.pack === 'all' && r.players[0].livery === 'team', 'missing parts get their defaults');
 const d2 = base(); d2.cup = { no: 1, race: 7, points: {} };
 check(Session.restore(d2).cup.race === 0, 'an impossible cup position starts the cup over');
+
+// four players on four phones: the fourth drives the grey truck; with no Ironman in the
+// race the level's rule falls back to "the last loses a credit"
+const four = new Session(['red', 'blue', 'yellow', 'grey'].map((truckId) => ({ truckId })), 'normal');
+const f4 = roundTrip(four);
+check(f4 && f4.players.length === 4 && f4.players[3].truckId === 'grey', 'four players (the grey truck the fourth\'s) kept');
+check(four.entries().length === 4 && four.entries().every((e) => e.human), 'four players: no CPU on the grid');
+const fakeRace = (order) => ({
+  finishOrder: order.map((p, k) => ({ entry: { truckId: four.players[p].truckId, name: 'P', player: p }, human: true, place: k + 1, finished: true, finishTime: 60 + k, bestLap: 15, money: 0, truck: { nitros: 5 } })),
+  racers: [], time: 64,
+});
+const res = four.applyResults(fakeRace([2, 0, 3, 1]));
+check(res.players.filter((p) => p.lost).length === 1 && res.players.find((p) => p.lost).index === 1, 'four players, Piloto: only the last loses a credit');
+
+// a quick race on several phones keeps its circuit and settings
+const q = new Session([{ truckId: 'red' }, { truckId: 'blue' }], 'hard', 'all', { id: 'volcano', reverse: true, time: 'night', rain: true, laps: 3, quick: true, cpu: false });
+const q2 = roundTrip(q);
+check(q2 && same(q2.free, q.free) && same(q2.currentTrack(), q.currentTrack()), 'a quick race keeps its circuit, light, rain and laps');
+check(q2.entries().length === 2, 'a quick race without the CPU: only the players on the grid');
+const q3 = JSON.parse(JSON.stringify(q.snapshot())); q3.free.id = 'nowhere';
+check(Session.restore(q3).free === null, 'an unknown circuit is not a quick race');
 
 console.log(ok ? 'SAVEGAME OK' : 'SAVEGAME FAIL');
 process.exit(ok ? 0 : 1);

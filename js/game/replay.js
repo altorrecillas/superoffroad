@@ -31,6 +31,7 @@ export class ReplayRecorder {
     this.n = 0;
     this.buf = new Uint8Array(BYTES * Math.max(1, this.players.length) * 120 * 90);
     this.marks = [];          // { s: step, k: kind, i: truck, j: other truck, v: value }
+    this.bots = [];           // { s: step, i: truck }: a player who left; the CPU drove it from then on
     this.lapSteps = [];       // step of each lap of the leader (timeline ticks)
     this.goStep = 0;
     this.doneStep = -1;
@@ -56,6 +57,10 @@ export class ReplayRecorder {
       this.buf[o++] = u.nitro ? 1 : 0;
     }
     const s = this.n;
+    // a player who left a game on several phones: from this step their truck is the CPU's
+    for (const r of race.racers) {
+      if (r.bot && !this.bots.some((b) => b.i === r.i)) this.bots.push({ s, i: r.i });
+    }
     for (const ev of race.events) {
       switch (ev[0]) {
         case 'go': this.goStep = s; break;
@@ -95,7 +100,7 @@ export class ReplayRecorder {
 export class ReplayPlayer {
   constructor(rec) {
     this.rec = rec;
-    this.inp = [0, 1, 2].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false }));
+    this.inp = [0, 1, 2, 3].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false })); // (up to four players)
   }
 
   // a fresh simulation at the start line
@@ -105,6 +110,11 @@ export class ReplayPlayer {
     race.autopilot = !!s.autopilot;
     race.autopilotSkill = s.autopilotSkill;
     return race;
+  }
+
+  // before step k: the players who had left by then are driven by the CPU, as they were
+  prepare(race, k) {
+    for (const b of this.rec.bots || []) if (b.s === k && race.racers[b.i]) race.racers[b.i].bot = true;
   }
 
   // the players' inputs of step k, indexed by player like the live ones

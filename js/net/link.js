@@ -41,6 +41,9 @@ export class Link {
       if (this.onopen) this.onopen();
     };
     ch.onclose = () => this._lost(`channel ${ch.label} closed`);
+    // a channel's own errors (Safari reports a send that a closing channel could not
+    // finish): the close that follows is what counts
+    ch.onerror = () => {};
     ch.onmessage = (e) => {
       if (ch === this.rel) {
         let m;
@@ -82,9 +85,13 @@ export class Link {
     });
   }
 
-  send(m) { if (this.rel && this.rel.readyState === 'open') { try { this.rel.send(JSON.stringify(m)); } catch (e) { /* closing */ } } }
+  // (nothing once the link is going: Safari complains about a send it could not finish
+  // even when the error is caught)
+  send(m) { if (!this.closed && !this.quiet && this.rel && this.rel.readyState === 'open') { try { this.rel.send(JSON.stringify(m)); } catch (e) { /* closing */ } } }
   // the newest state is all that matters: skip a packet rather than queue them up
-  sendFast(buf) { if (this.fast && this.fast.readyState === 'open' && this.fast.bufferedAmount < 64000) { try { this.fast.send(buf); } catch (e) { /* closing */ } } }
+  sendFast(buf) { if (!this.closed && !this.quiet && this.fast && this.fast.readyState === 'open' && this.fast.bufferedAmount < 64000) { try { this.fast.send(buf); } catch (e) { /* closing */ } } }
+  // the last word said (a goodbye): from now on this side only listens until it closes
+  hush() { this.quiet = true; }
 
   _lost(why = '') {
     if (this.closed) return;

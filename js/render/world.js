@@ -76,7 +76,12 @@ function playerRing(color) {
 // lift and red where it has to brake, from the jump-aware speed profile of its own
 // truck (like the driving line of modern racing games). It also shows the way.
 const GUIDE_N = 15;           // chevrons, one every two line points (~4 m)
-const G_GREEN = new THREE.Color(0.12, 0.95, 0.25), G_AMBER = new THREE.Color(1, 0.62, 0.05), G_RED = new THREE.Color(1, 0.09, 0.05);
+// keep the speed / lift / brake; the colour-blind palette (option COLORES DALTONISMO)
+// tells them apart by blue, yellow and vermilion, and by brightness
+const GUIDE_PAL = {
+  normal: [new THREE.Color(0.12, 0.95, 0.25), new THREE.Color(1, 0.62, 0.05), new THREE.Color(1, 0.09, 0.05)],
+  cvd: [new THREE.Color(0.1, 0.5, 1), new THREE.Color(1, 0.9, 0.15), new THREE.Color(1, 0.28, 0)],
+};
 const _gc = new THREE.Color(), _gm = new THREE.Matrix4(), _gp = new THREE.Vector3(), _gq = new THREE.Quaternion(), _gy = new THREE.Quaternion(), _g1 = new THREE.Vector3(1, 1, 1);
 let _guideTex = null;
 function guideTexture() {
@@ -289,6 +294,8 @@ export class RaceWorld {
   }
   showRings(on) { for (const m of this.rings || []) if (m) m.visible = on; }
 
+  setPalette(name) { this.gpal = GUIDE_PAL[name] || GUIDE_PAL.normal; }
+
   // the racing line for racer `index` (-1: none)
   setGuide(index) {
     let G = this.guide;
@@ -360,7 +367,8 @@ export class RaceWorld {
       const d = Math.hypot(x - t.x, z - t.z), vp = G.profile[k];
       const need = v > vp ? (v * v - vp * vp) / (2 * Math.max(2, d)) : 0;
       const q = Math.min(1, need / 9);
-      if (q < 0.5) _gc.copy(G_GREEN).lerp(G_AMBER, q * 2); else _gc.copy(G_AMBER).lerp(G_RED, (q - 0.5) * 2);
+      const P = this.gpal || GUIDE_PAL.normal;
+      if (q < 0.5) _gc.copy(P[0]).lerp(P[1], q * 2); else _gc.copy(P[1]).lerp(P[2], (q - 0.5) * 2);
       const alpha = Math.min(1, Math.max(0, (d - 3) / 5)) * Math.min(1, Math.max(0, (reach - d) / 12)) * 0.86;
       G.col.setXYZW(n, _gc.r, _gc.g, _gc.b, alpha);
     }
@@ -473,6 +481,8 @@ export class RaceWorld {
           this.fxState[ev[1]].landKick = clamp(ev[2] * 0.22, 0, 2.6);
           if (sev > 0.4) this.stadium.cheer(0.25);
           if (mine(r) && sev > 0.5) this.shake = Math.max(this.shake, sev * 0.35);
+          // a player's big jump: the stands go wild, flashes everywhere
+          if (mine(r) && ev[3] > 0.5) this.stadium.flashes(clamp((ev[3] - 0.4) * 2.2, 0.3, 1));
           break;
         }
         case 'wall': fx.sparksAt(ev[3], t.y, ev[4], ev[5], ev[6], clamp(ev[2] / 12, 0.2, 1)); if (ev[2] > 8) this.stadium.cheer(0.15); break;
@@ -482,7 +492,7 @@ export class RaceWorld {
           break;
         }
         case 'pickup': fx.pickupBurst(ev[4], this.track.heightAt(ev[4], ev[5]), ev[5], ev[2]); break;
-        case 'finish': this.stadium.cheer(0.6); fx.confettiBurst(t.x, t.y + 2, t.z, 120); break;
+        case 'finish': this.stadium.cheer(0.6); fx.confettiBurst(t.x, t.y + 2, t.z, 120); if (ev[2] === 1) this.stadium.flashes(1); break;
         case 'go': this.stadium.cheer(0.5); break;
         case 'nitro': this.stadium.cheer(0.08); break;
       }
@@ -551,7 +561,8 @@ export class RaceWorld {
         const lx = -TRUCK.wheelX - 0.3, lz = side * TRUCK.wheelZ;
         fx.splash(t.x + lx * c - lz * sn, track.heightAt(t.x + lx * c - lz * sn, t.z + lx * sn + lz * c) + 0.1, t.z + lx * sn + lz * c, t.vx * 0.5, t.vz * 0.5, clamp(speed / 45, 0.1, 0.32));
       }
-      if (grounded && !wet && !this.raining && speed > 4) {
+      // (the winner's donuts: slow, but the tyres smoke)
+      if (grounded && !wet && !this.raining && (speed > 4 || t.slip > 5)) {
         st.dustAcc += dt * (speed * 0.9 + t.slip * 4) * fx.k;
         while (st.dustAcc > 1) {
           st.dustAcc -= 1;
@@ -559,6 +570,17 @@ export class RaceWorld {
           const lx = -TRUCK.wheelX - 0.3, lz = side * TRUCK.wheelZ;
           const wx = t.x + lx * c - lz * sn, wz = t.z + lx * sn + lz * c;
           fx.wheelDust(wx, track.heightAt(wx, wz), wz, t.vx, t.vz, clamp(speed / 24 + t.slip / 8, 0.1, 1), this.timeName === 'night' ? 0.8 : 1);
+        }
+      }
+      // the winner's donuts: tyre smoke
+      if (grounded && !wet && t.slip >= 6.5 && speed < 6 && race.state === 'done') {
+        st.smokeAcc = (st.smokeAcc || 0) + dt * 22 * fx.k;
+        while (st.smokeAcc > 1) {
+          st.smokeAcc -= 1;
+          const side = Math.random() < 0.5 ? -1 : 1, lx = -TRUCK.wheelX, lz = side * TRUCK.wheelZ;
+          const wx = t.x + lx * c - lz * sn, wz = t.z + lx * sn + lz * c;
+          fx.smoke.spawn({ x: wx, y: track.heightAt(wx, wz) + 0.35, z: wz, vx: (Math.random() - 0.5) * 1.6, vy: 0.8 + Math.random() * 0.9, vz: (Math.random() - 0.5) * 1.6,
+            life: 1.5 + Math.random() * 0.9, size: 1.4, size1: 5.2, r: 0.84, g: 0.82, b: 0.8, a: 0.55, drag: 1.1, fadeIn: 0.1 });
         }
       }
       // wheelspin and slides throw clods
@@ -612,6 +634,9 @@ export class RaceWorld {
     this._updateRain(dt);
     fx.update(dt, (x, z) => track.heightAt(x, z));
     this.pickups.update(dt, race, track);
+    // the winner's donuts after the race: the crowd keeps cheering and flashing
+    const win = race.state === 'done' && race.finishOrder[0];
+    if (win && win.truck.slip >= 6.5 && win.truck.speed < 6) { this.stadium.cheer(dt * 0.8); if (Math.random() < dt * 0.8) this.stadium.flashes(0.35); }
     this.stadium.update(dt, this.view.camera);
     this._camera(dt);
     this._screen(dt);
@@ -829,6 +854,15 @@ export class RaceWorld {
       cam.lookAt(tp.x, tp.y + 1, tp.z);
       this._look = new THREE.Vector3(tp.x, tp.y + 1, tp.z);
       fov = o.fov ?? 40;
+    } else if (this.camMode === 'finish' && race) {
+      // the photo finish: low at the side of the line, looking along it (the finish
+      // plane is the middle of the picture)
+      if (!this._fin || this.camT < 0.02) this._fin = this._finishSpot();
+      const f = this._fin;
+      cam.position.set(f.x, f.y, f.z);
+      cam.lookAt(f.lx, f.ly, f.lz);
+      this._look = new THREE.Vector3(f.lx, f.ly, f.lz);
+      fov = 52;
     } else if (this.camMode === 'fixed') {
       const o = this.camOpts;
       cam.position.set(o.pos[0], o.pos[1], o.pos[2]);
@@ -849,6 +883,21 @@ export class RaceWorld {
       cam.position.y += (Math.random() - 0.5) * this.shake;
       this.shake *= Math.exp(-dt * 8);
     }
+  }
+
+  // where the photo finish camera stands: off one end of the line, seeing across the track
+  _finishSpot() {
+    const tr = this.track, sl = tr.startLine, nx = -sl.tz, nz = sl.tx;
+    const ly = tr.heightAt(sl.x, sl.z) + 0.7;
+    for (const side of [1, -1]) {
+      for (const d of [sl.hw + 4.5, sl.hw + 6.5, sl.hw + 3]) {
+        const x = sl.x + nx * side * d, z = sl.z + nz * side * d, y = tr.heightAt(x, z) + 2.6;
+        const fx = sl.x - nx * side * sl.hw * 0.8, fz = sl.z - nz * side * sl.hw * 0.8;
+        if (Math.abs(x) < 70 && Math.abs(z) < 46 && this._los(x, y, z, sl.x, ly, sl.z) && this._los(x, y, z, fx, tr.heightAt(fx, fz) + 0.9, fz)) return { x, y, z, lx: sl.x, ly, lz: sl.z };
+      }
+    }
+    const x = sl.x + nx * (sl.hw + 4.5), z = sl.z + nz * (sl.hw + 4.5);
+    return { x, y: tr.heightAt(x, z) + 4, z, lx: sl.x, ly, lz: sl.z };
   }
 
   // line of sight for the replay cameras: neither the ground nor a barrier in between

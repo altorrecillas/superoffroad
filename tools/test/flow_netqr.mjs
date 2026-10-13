@@ -91,6 +91,7 @@ try {
   await waitFor(G, () => !!document.querySelector('#netwait'), null, 30000, 'guest connected');
   check(true, 'connected with no internet at all');
   await click(H, '#nethost [data-a=go]');
+  await click(H, '#netmode .ccard[data-k=champ]'); // a championship (not a quick race)
   await click(H, '#diff .dcard[data-k=easy]');
   await click(H, '#select .card[data-id=yellow]');
   await click(G, '#select .card[data-id=red]');

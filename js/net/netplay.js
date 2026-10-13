@@ -1,5 +1,5 @@
-// The connections of a game on several phones (up to three players: player 1's phone
-// is the host, players 2 and 3 join it). Pairing: a room code through the PeerJS cloud,
+// The connections of a game on several phones (up to four players: player 1's phone
+// is the host, players 2, 3 and 4 join it). Pairing: a room code through the PeerJS cloud,
 // or QR codes with no internet at all (one per phone that joins). A hello checks that
 // every phone runs the same version, a ping every second watches each link, and the
 // race traffic: the host packs the race 60 times a second for each guest and takes
@@ -13,10 +13,24 @@ import { packState, unpackState, packInput, unpackInput, kindOf, KIND_STATE, KIN
 import { VERSION } from '../version.js';
 
 export const NET_PROTO = 1;
-export const MAX_PLAYERS = 3;
+export const MAX_PLAYERS = 4;
 const params = new URLSearchParams(location.search);
 const sigURL = () => params.get('sig') || undefined; // tests: a local stand-in for the cloud server
 const rid = () => Math.random().toString(36).slice(2, 12);
+
+// A timeout that counts only the time this page is alive: a phone frozen for a few
+// seconds (building a circuit, compiling shaders, busy) does not run the clock down while
+// it cannot even read the answer that has already arrived
+function liveTimeout(ms, fn) {
+  let live = 0, last = performance.now();
+  const iv = setInterval(() => {
+    const now = performance.now();
+    live += Math.min(now - last, 1000);
+    last = now;
+    if (live >= ms) { clearInterval(iv); fn(); }
+  }, 250);
+  return iv;
+}
 
 // The host's clock seen from a guest: offset = host time - local time, taken from the
 // fastest packets of the last seconds; the race is drawn `delay` ms behind it, a delay
@@ -106,7 +120,7 @@ export class NetPlay {
     this.code = null;
     this.sig = null;
     this.peers = [];                          // host: one per guest; guest: the host
-    this.max = MAX_PLAYERS;                   // host: players in the room, itself included (2 or 3)
+    this.max = MAX_PLAYERS;                   // host: players in the room, itself included (2 to 4)
     this.locked = false;                      // host: no new players (the game is about to start or has)
     this.started = false;                     // host: the championship is on (only a known player may come back)
     this.gameId = role === 'host' ? rid() : null;
@@ -150,12 +164,32 @@ export class NetPlay {
       const code = String(1000 + Math.floor(Math.random() * 9000));
       const sig = new CloudSignal(ROOM_PREFIX + code, sigURL());
       try { await sig.open(); } catch (e) { last = e; if (e.message === 'taken') continue; throw e; }
-      this.sig = sig; this.code = code;
-      sig.onmessage = (m) => this._hostSignal(m);
-      sig.onclose = () => { if (this.sig === sig) this.sig = null; };
+      this._roomSig(sig, code);
       return code;
     }
     throw last || new Error('taken');
+  }
+  _roomSig(sig, code) {
+    this.sig = sig; this.code = code;
+    sig.onmessage = (m) => this._hostSignal(m);
+    sig.onclose = () => { if (this.sig === sig) { this.sig = null; this._reopenRoom(code); } };
+  }
+  // The room's line to the server dropped (a phone changing network, the server going
+  // down a moment): the same room again, so that a phone losing the game can come back
+  // with the same code. (Right after a drop the server may still hold the old one.)
+  async _reopenRoom(code) {
+    if (this._reopening) return;
+    this._reopening = true;
+    for (let i = 0; i < 20 && !this.closed && !this.sig; i++) {
+      await new Promise((r) => setTimeout(r, 2500 + i * 1500));
+      if (this.closed || this.sig) break;
+      const sig = new CloudSignal(ROOM_PREFIX + code, sigURL());
+      try { await sig.open(); } catch (e) { continue; }
+      if (this.closed) { sig.close(); break; }
+      this._roomSig(sig, code);
+      this.log('room open again', code);
+    }
+    this._reopening = false;
   }
   _hostSignal(m) {
     const p = m.payload || {};
@@ -200,9 +234,10 @@ export class NetPlay {
     // twelve seconds for the room to answer (no answer: no such game); once it has, time
     // for the connection itself (a slow WiFi, a relay through the internet)
     await new Promise((resolve, reject) => {
-      const w = { peer: null, resolve, reject, t: setTimeout(() => this._settle(w, new Error('nolink')), 45000) };
+      const w = { peer: null, resolve, reject, t: liveTimeout(45000, () => this._settle(w, new Error('nolink'))) };
       this._waiters.push(w);
-      setTimeout(() => { if (!answered) this._settle(w, new Error('notfound')); }, 12000);
+      const nf = liveTimeout(12000, () => { if (!answered) this._settle(w, new Error('notfound')); });
+      w.also = nf;
     });
     // the room's server is not needed any more (a new knock opens it again)
     sig.close(); this.sig = null;
@@ -249,7 +284,7 @@ export class NetPlay {
   waitOpen(ms, why, peer = null) {
     if (peer ? peer.open : this.role === 'guest' && this.open) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const w = { peer, resolve, reject, t: setTimeout(() => this._settle(w, new Error(why)), ms) };
+      const w = { peer, resolve, reject, t: liveTimeout(ms, () => this._settle(w, new Error(why))) };
       this._waiters.push(w);
     });
   }
@@ -257,7 +292,7 @@ export class NetPlay {
     const i = this._waiters.indexOf(w);
     if (i < 0) return;
     this._waiters.splice(i, 1);
-    clearTimeout(w.t);
+    clearInterval(w.t); clearInterval(w.also);
     if (err) w.reject(err); else w.resolve();
   }
   _opened(peer, err = null) { for (const w of this._waiters.slice()) if (!w.peer || w.peer === peer) this._settle(w, err); }
@@ -273,7 +308,7 @@ export class NetPlay {
         if (!back) {
           if (this.locked || this.started) { peer.send({ t: 'refuse', why: 'busy', version: VERSION }); return; }
           const taken = new Set(this.peers.filter((p) => p.open && p !== peer).map((p) => p.player));
-          player = [1, 2].find((n) => n < this.max && !taken.has(n));
+          player = [1, 2, 3].find((n) => n < this.max && !taken.has(n));
           if (player == null) { peer.send({ t: 'refuse', why: 'full', version: VERSION }); return; }
         }
         // a seat taken back: the old link of that player goes
@@ -287,7 +322,7 @@ export class NetPlay {
         return;
       }
       case 'welcome':
-        this.gameId = m.gameId; this.local = m.player; this.token = m.token;
+        this.gameId = m.gameId; this.local = m.player | 0; this.token = m.token;
         peer.player = 0; peer.open = true;
         this._opened(peer);
         return;
@@ -304,6 +339,7 @@ export class NetPlay {
   }
 
   close() {
+    this.closed = true;
     this.onjoin = this.onlost = this.onstall = this.onrejoin = null;
     this.handlers = {};
     if (this.beacon) { this.beacon.close(); this.beacon = null; }
@@ -317,12 +353,13 @@ export class NetPlay {
     this.onjoin = this.onlost = this.onstall = this.onrejoin = null;
     this.handlers = {};
     this.send({ t: 'bye' });
+    for (const p of this.peers) p.link.hush(); // (the goodbye is the last thing sent)
     setTimeout(() => this.close(), 250);
   }
   // host: let one player go (the others play on)
   drop(player) {
     const p = this.peers.find((x) => x.player === player);
-    if (p) { this.peers.splice(this.peers.indexOf(p), 1); p.send({ t: 'bye' }); setTimeout(() => p.close(), 250); }
+    if (p) { this.peers.splice(this.peers.indexOf(p), 1); p.send({ t: 'bye' }); p.link.hush(); setTimeout(() => p.close(), 250); }
     for (const [k, v] of Object.entries(this.seats)) if (v === player) delete this.seats[k];
   }
 

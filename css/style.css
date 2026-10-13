@@ -367,6 +367,10 @@ img { -webkit-user-drag: none; -webkit-touch-callout: none; }
 #options .btn { white-space: nowrap; }
 #options .sn { display: none; }
 @media (max-width: 700px), (max-height: 380px) { #options .ln { display: none; } #options .sn { display: inline; } }
+/* (three columns on a landscape phone: the short labels too, and a label never runs into its value) */
+@media (max-height: 400px) and (min-aspect-ratio: 3/2) { #options .ln { display: none; } #options .sn { display: inline; } }
+#options .btn .ln, #options .btn .sn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#options .btn .val { flex: none; }
 
 /* ---------- difficulty cards */
 .dcards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 12px 18px 8px; }
@@ -694,3 +698,58 @@ img { -webkit-user-drag: none; -webkit-touch-callout: none; }
 .netfound .nethelp.sub { padding: 2px 0 4px; text-align: center; }
 .foundlist { display: flex; flex-direction: column; gap: 6px; min-height: 34px; justify-content: center; text-align: center; font-size: clamp(16px, 2vw, 19px); }
 .foundlist .btn { justify-content: center; }
+/* the announcer's subtitles (option SUBTÍTULOS): low in the middle, between the thumbs */
+#subs { position: fixed; left: 50%; bottom: calc(52px + var(--safe-b)); z-index: 16; pointer-events: none; max-width: min(56vw, 640px); text-align: center;
+  display: flex; align-items: baseline; gap: 8px; background: rgba(0, 0, 0, 0.72); border-radius: 7px; padding: 3px 12px 1px;
+  opacity: 0; transform: translate(-50%, 8px); transition: opacity 0.18s, transform 0.18s; }
+#subs.on { opacity: 1; transform: translate(-50%, 0); }
+#subs small { color: var(--gold); font-size: clamp(11px, 1.5vw, 14px); letter-spacing: 0.12em; white-space: nowrap; }
+#subs span { color: #fff; font-family: 'Teko', sans-serif; font-size: clamp(21px, 3.3vw, 32px); line-height: 1.05; letter-spacing: 0.02em; }
+/* colour-blind colours (option COLORES DALTONISMO): blue for good, orange for bad */
+body.cvd .ok, body.cvd .toast .lt.best { color: #5ab8ff; }
+body.cvd .bad, body.cvd .toast .lt.worse { color: #ff9a1f; }
+body.cvd #count .n.go { color: #4fb0ff; }
+body.cvd .lights i.green { background: #3a9cff; box-shadow: 0 0 22px #3a9cff, inset 0 0 6px #fff6; }
+body.cvd .hud-me .pos.up { animation-name: posUpC; }
+body.cvd .hud-me .pos.down { animation-name: posDownC; }
+@keyframes posUpC { 0% { transform: scale(1); } 25% { transform: scale(1.35); color: #5ab8ff; } 100% { transform: scale(1); } }
+@keyframes posDownC { 0% { transform: scale(1); } 25% { transform: scale(1.2); color: #ff9a1f; } 100% { transform: scale(1); } }
+body.cvd .netping i { background: #5ab8ff; }
+body.cvd .netping.bad i { background: #ff9a1f; }
+body.cvd .netplayers span.in { border-color: rgba(90, 184, 255, 0.7); color: #c4e4ff; }
+/* COLOCAR BOTONES: the pad's buttons loose over the screen, the picked one in gold */
+#ui #padedit { justify-content: flex-start; }
+.padedit .head { padding: 14px 20px 2px; font-size: clamp(18px, 2.6vw, 26px); }
+.padedit .nethelp { padding-top: 2px; padding-bottom: 4px; }
+.padedit .btn.sq { min-width: 2.4em; justify-content: center; font-style: normal; }
+#touch.edit { visibility: visible !important; }
+#touch.edit .tpause { display: none; }
+#touch.edit .tbtn, #touch.edit .tstick { outline: 2px dashed rgba(255, 255, 255, 0.6); outline-offset: 3px; cursor: grab; }
+#touch.edit .sel { outline: 3px solid var(--gold); box-shadow: 0 0 26px rgba(255, 207, 58, 0.6); }
+/* the photo finish: the picture's look, the finish plane down the middle, the gap */
+#app.photo-look { filter: grayscale(0.75) sepia(0.28) contrast(1.18) brightness(1.04); }
+#ui #photofin { pointer-events: none; justify-content: flex-start; padding-top: calc(12px + var(--safe-t)); }
+/* the picture alone: no scoreboard, no pad over it */
+#ui .screen.pf-hide, #touch.pf-hide { visibility: hidden; }
+.pf-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: rgba(255, 40, 30, 0.85); box-shadow: 0 0 6px rgba(255, 40, 30, 0.7); }
+.pf-card { position: relative; background: rgba(8, 6, 5, 0.82); border: 1px solid var(--line); border-radius: 10px; padding: 4px 16px 6px; min-width: min(300px, 70vw); animation: pop 0.35s ease both; }
+.pf-title { font-family: 'Russo', sans-serif; font-style: italic; font-size: clamp(20px, 3vw, 30px); color: var(--gold); text-align: center; letter-spacing: 0.05em; }
+.pf-row { display: flex; align-items: center; gap: 8px; font-size: clamp(18px, 2.6vw, 26px); line-height: 1.15; }
+.pf-row b { font-family: 'Russo', sans-serif; font-style: italic; font-weight: normal; min-width: 1.6em; }
+.pf-row i { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.pf-row span { flex: 1; }
+.pf-row em { font-style: normal; color: #ffb4a8; font-family: 'Teko', sans-serif; font-size: 1.15em; }
+.pf-row.me span { color: var(--gold); }
+/* mud and drops on the chase camera's lens (under the HUD, over the 3D view) */
+#lens { position: fixed; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.lz { position: absolute; opacity: 0; animation: lensIn linear forwards; }
+.lz.mud { background: radial-gradient(ellipse 22% 16% at 34% 30%, rgba(255, 236, 210, 0.55), transparent 100%),
+  radial-gradient(circle at 42% 38%, rgba(52, 33, 17, 0.92), rgba(78, 52, 29, 0.86) 45%, rgba(120, 88, 58, 0.55) 72%, rgba(150, 118, 84, 0.18) 88%, transparent 100%); }
+.lz.water { animation-name: lensRun; background: radial-gradient(circle at 34% 30%, rgba(255, 255, 255, 0.75), rgba(215, 232, 255, 0.22) 28%, rgba(120, 150, 180, 0.16) 60%, rgba(30, 40, 55, 0.28) 82%, rgba(255, 255, 255, 0.4) 90%, transparent 100%); }
+@keyframes lensIn { 0% { opacity: 0; } 5% { opacity: 1; } 70% { opacity: 0.85; } 100% { opacity: 0; } }
+@keyframes lensRun { 0% { opacity: 0; translate: 0 0; } 8% { opacity: 0.9; } 100% { opacity: 0; translate: 0 7vh; } }
+/* several phones: championship or quick race */
+.ccards.two { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(600px, 92vw); }
+/* four trucks to choose from (four players on four phones): one row, narrower cards */
+#select .cards.four { flex-wrap: nowrap; gap: 10px; }
+#select .cards.four .card { width: clamp(118px, 19vw, 205px); }

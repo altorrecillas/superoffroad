@@ -1,4 +1,4 @@
-// Two or three phones, one championship: browsers with separate storage (like
+// Two or three phones, one championship (the quick race and four phones: flow_netquick.mjs): browsers with separate storage (like
 // separate phones) pair with a room code through a local stand-in for the PeerJS cloud
 // (mocksignal.mjs), then play: the room (player 1 starts when everyone is in), the
 // difficulty on player 1's phone and each truck on its own phone, the race drawn on the
@@ -83,7 +83,12 @@ try {
   check(pongs.length === N - 1 && pongs.every((x) => x > 0), `player 1 pings every phone (${pongs.join(', ')} answers so far)`);
   await click(H, '#nethost [data-a=go]');
 
-  // the difficulty on player 1's phone, each truck on its own phone, in turn
+  // championship or quick race (the others wait); then the difficulty on player 1's
+  // phone, each truck on its own phone, in turn
+  await waitFor(H, () => !!document.querySelector('#netmode .ccard[data-k=champ]'), null, 20000, 'what to play');
+  for (const g of GS) await waitFor(g, () => /campeonato o carrera rápida/.test(document.querySelector('#netwait .netstatus')?.textContent || ''), null, 20000, 'guest waits for the choice');
+  check(true, 'player 1 chooses championship or quick race; the others are told');
+  await click(H, '#netmode .ccard[data-k=champ]');
   await waitFor(H, () => !!document.querySelector('#diff'), null, 20000, 'difficulty');
   await click(H, '#diff .dcard[data-k=normal]');
   await click(H, '#select .card[data-id=red]');
@@ -99,8 +104,10 @@ try {
     await click(g, `#select .card[data-id=${trucks[i]}]`);
   }
   await all((p) => waitState(p, ['intro', 'race']));
-  const banners = await all((p) => p.evaluate(() => document.querySelector('#intro .track')?.textContent + ' / ' + document.querySelector('#intro .race')?.textContent));
-  check(banners.every((b) => b === banners[0]), `the same race on every phone (${banners[0]})`);
+  // (the race itself: a slow phone may already have left the fly-over and its banner,
+  // since every phone starts the race when player 1's fly-over ends)
+  const races = await all((p) => p.evaluate(() => { const g = window.__game; return `${g.race.track.id}${g.race.track.reverse ? ' (inv.)' : ''} · carrera ${g.session.cup.race + 1}/4 · ${g.race.laps} v`; }));
+  check(races.every((b) => b === races[0]), `the same race on every phone (${races[0]})`);
   const humans = await H.evaluate(() => window.__game.race.racers.filter((r) => r.human).length);
   check(humans === N, `${N} human trucks in player 1's race`);
   await H.screenshot({ path: `${OUT}/net${N}_p1_intro.png`, timeout: 240000 });

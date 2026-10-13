@@ -3,7 +3,7 @@
 
 import { TRUCKS, truckDef } from './drivers.js';
 import { paintOf } from './liveries.js';
-import { SEASONS } from '../sim/tracks.js';
+import { SEASONS, trackById } from '../sim/tracks.js';
 
 export const PRIZES = [100000, 90000, 80000, 70000];
 export const UPGRADES = [
@@ -55,7 +55,7 @@ export class Session {
     this.difficulty = DIFFICULTY[difficulty] ? difficulty : 'normal';
     this.pack = SEASONS[tracks] ? tracks : 'all';
     this.rotation = SEASONS[this.pack];
-    this.free = free; // single race: { id, reverse, time, trial }
+    this.free = free; // single race: { id, reverse, time, rain, laps, trial | tutorial | quick (several phones), cpu }
     this.diff = DIFFICULTY[difficulty] || DIFFICULTY.normal;
     this.raceNo = 0;
     // adaptive levels (Novato, Piloto): the rivals follow the player's form, sharper
@@ -145,7 +145,8 @@ export class Session {
         ai: { skill: 0.5, aggression: 0 },
       });
     }
-    if (this.free && (this.free.trial || this.free.tutorial)) { out.forEach((e, i) => (e.slot = i)); return out; } // time trial, tutorial: alone on the track
+    // time trial, tutorial: alone on the track; a quick race without the CPU: only the players
+    if (this.free && (this.free.trial || this.free.tutorial || this.free.cpu === false)) { out.forEach((e, i) => (e.slot = i)); return out; }
     for (const def of TRUCKS) {
       if (used.has(def.id)) continue;
       const s = this.cpuSetup(def);
@@ -176,7 +177,11 @@ export class Session {
     this._adapt(race);
     const cpuPlaces = rows.filter((r) => !r.human).map((r) => r.place);
     const ironPlace = rows.find((r) => r.ironman)?.place ?? 99;
-    const out = { rows, players: [], raceNo: this.raceNo, mult: this.prizeMult(assistOf(0)), assist: assistOf(0) };
+    // the level's rule needs its rival: without Ironman in the race (a fourth player drives
+    // the grey truck) or without the CPU, a credit goes only to the last
+    let rule = this.diff.rule;
+    if ((rule === 'ironman' && ironPlace === 99) || (rule === 'any' && !cpuPlaces.length)) rule = 'last';
+    const out = { rows, players: [], raceNo: this.raceNo, mult: this.prizeMult(assistOf(0)), assist: assistOf(0), rule };
     for (const row of rows) {
       if (!row.human) continue;
       const p = this.players[row.player];
@@ -192,8 +197,8 @@ export class Session {
       if (row.place === 1) p.wins++;
       p.streak = row.place === 1 ? (p.streak || 0) + 1 : 0; // wins in a row
       let lost = false;
-      if (this.diff.rule === 'last') lost = row.place === 4;
-      else if (this.diff.rule === 'ironman') lost = ironPlace < row.place;
+      if (rule === 'last') lost = row.place === rows.length && rows.length > 1;
+      else if (rule === 'ironman') lost = ironPlace < row.place;
       else lost = cpuPlaces.some((c) => c < row.place);
       if (lost) p.credits--;
       out.players.push({ index: p.index, prize, bags, lost, credits: p.credits, place: row.place, mult: k, assist: assistOf(p.index) });
@@ -273,7 +278,7 @@ export class Session {
   snapshot() {
     return {
       difficulty: this.difficulty, pack: this.pack, raceNo: this.raceNo, form: this.form, streak: this.streak || 0,
-      cup: this.cup, lastOrder: this.lastOrder || null,
+      cup: this.cup, lastOrder: this.lastOrder || null, free: this.free ? { ...this.free } : null,
       players: this.players.map((p) => ({ ...p, upgrades: { ...p.upgrades } })),
     };
   }
@@ -281,11 +286,18 @@ export class Session {
   // allowOver: a finished championship too (the guest's copy at the game over)
   static restore(d, allowOver = false) {
     const num = (v, min, max) => typeof v === 'number' && isFinite(v) && v >= min && v <= max;
-    if (!d || !DIFFICULTY[d.difficulty] || !Array.isArray(d.players) || d.players.length < 1 || d.players.length > 3) return null;
+    if (!d || !DIFFICULTY[d.difficulty] || !Array.isArray(d.players) || d.players.length < 1 || d.players.length > 4) return null;
     if (!Number.isInteger(d.raceNo) || d.raceNo < 0) return null;
-    if (!d.players.every((p) => p && truckDef(p.truckId) && !truckDef(p.truckId).cpu.ironman && num(p.money, 0, 1e10) && num(p.earned, 0, 1e10)
+    // (the grey truck is a player's only in a game of four on four phones)
+    if (!d.players.every((p) => p && truckDef(p.truckId) && (!truckDef(p.truckId).cpu.ironman || d.players.length === 4) && num(p.money, 0, 1e10) && num(p.earned, 0, 1e10)
       && num(p.credits, -9, 99) && num(p.nitros, 0, 99) && p.upgrades && UPGRADES.every((u) => num(p.upgrades[u.id], 0, MAX_LEVEL)))) return null;
-    const s = new Session(d.players.map((p) => ({ truckId: p.truckId, vehicle: p.vehicle === 'buggy' ? 'buggy' : 'truck', livery: typeof p.livery === 'string' ? p.livery : 'team' })), d.difficulty, d.pack);
+    // a single race (a quick race on several phones): its circuit and settings
+    const f = d.free;
+    const free = f && typeof f === 'object' && typeof f.id === 'string' && trackById(f.id) ? {
+      id: f.id, reverse: !!f.reverse, time: ['day', 'sunset', 'night'].includes(f.time) ? f.time : null, rain: !!f.rain,
+      laps: Number.isInteger(f.laps) && f.laps >= 1 && f.laps <= 9 ? f.laps : undefined, quick: !!f.quick, cpu: f.cpu !== false,
+    } : null;
+    const s = new Session(d.players.map((p) => ({ truckId: p.truckId, vehicle: p.vehicle === 'buggy' ? 'buggy' : 'truck', livery: typeof p.livery === 'string' ? p.livery : 'team' })), d.difficulty, d.pack, free);
     d.players.forEach((p, i) => {
       const q = s.players[i];
       for (const u of UPGRADES) q.upgrades[u.id] = Math.round(p.upgrades[u.id]);

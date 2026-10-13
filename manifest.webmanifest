@@ -1,7 +1,7 @@
 {
   "name": "Super Off Road · Remastered",
   "short_name": "Super Off Road",
-  "description": "Remake en 3D del arcade Super Off Road (1989): 16 circuitos, camión o buggy, contrarreloj con fantasma y hasta 3 jugadores.",
+  "description": "Remake en 3D del arcade Super Off Road (1989): 16 circuitos, camión o buggy, contrarreloj con fantasma y hasta 4 jugadores (cada uno en su móvil).",
   "start_url": "./index.html",
   "scope": "./",
   "display": "fullscreen",

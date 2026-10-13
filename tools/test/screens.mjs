@@ -82,11 +82,18 @@ await snap('02newrun', () => document.querySelector('#menu [data-a=p1]').click()
 await snap('02multi', () => { const g = window.__game; g.ui.hide('newrun'); g.toMultiPlayers(3, () => {}); });
 await snap('02netmenu', () => { const g = window.__game; g.ui.hide('two'); g.toNetMenu(3); });
 await snap('02nethost', () => { const g = window.__game; g.ui.hide('netmenu'); g._netHost(3, 'code'); }, 2500);
-await snap('02netqr', () => { const g = window.__game; g.ui.hide('nethost'); g.netLeave(false); g._netHost(2, 'qr'); }, 3000);
+// EMPEZAR: championship or quick race, the quick race's settings, four trucks to choose from
+await snap('02netmode', () => { const g = window.__game; g.ui.hide('nethost'); g._netModePick(); });
+await snap('02netquick', () => { const g = window.__game; g.ui.hide('netmode'); g._netQuickSetup(); });
+await snap('02select4', () => { const g = window.__game; g.ui.hide('netquick'); g.toSelect(1, 'normal', { title: 'JUGADOR 4: ELIGE TU VEHÍCULO', trucks: ['red', 'blue', 'yellow', 'grey'], taken: [{ truckId: 'red' }, { truckId: 'blue' }, { truckId: 'yellow' }], done: () => {} }); });
+await snap('02netqr', () => { const g = window.__game; g.ui.hide('select'); g.netLeave(false); g._netHost(2, 'qr'); }, 3000);
 await snap('02netjoin', () => { const g = window.__game; g.ui.hide('nethost'); g.netLeave(false); g._netJoin(2); });
 await snap('03options', () => { const g = window.__game; g.ui.hide('netjoin'); g.netLeave(false); g.ui.hide('menu'); g.toOptions(() => {}); });
 await snap('03ctrl', () => document.querySelector('#options [data-k=touch]').click());
+await snap('03padedit', () => { const g = window.__game; g.ui.hide('ctrlpick'); g.ui.hide('options'); g._padEditor(() => {}); });
+await snap('03padedit2', () => { const g = window.__game; g.touch.edit(false); g.ui.hide('padedit'); g.toOptions(() => {}); });
 await snap('04help', () => { const g = window.__game; g.ui.hide('ctrlpick'); g.ui.hide('options'); g.toHelp(() => {}); });
+await snap('04helpend', () => { const b = document.querySelector('#help .help-body'); b.scrollTop = b.scrollHeight * 0.55; });
 await snap('05scores', () => { const g = window.__game; g.ui.hide('help'); g.toScores(() => {}); });
 await snap('05ach', () => { const g = window.__game; g.ui.hide('scores'); g.toAchievements(() => {}); });
 await snap('05daily', () => { const g = window.__game; g.ui.hide('achievements'); g.toDaily(); }, 4000);
@@ -94,8 +101,10 @@ await snap('06diff', () => { const g = window.__game; g.ui.hide('daily'); g.toDi
 await snap('06select', () => { const g = window.__game; g.ui.hide('diff'); g.toSelect(1, 'normal'); });
 await snap('07free', () => { const g = window.__game; g.ui.hide('select'); g.toFreeRace(); });
 await snap('08intro', () => { const g = window.__game; g.ui.hide('free'); g.freeSetup = null; g.startChampionship([{ truckId: 'red', vehicle: 'truck' }], 'normal'); g.warp = 0.02; }, 2500);
-await snap('09race', () => { const g = window.__game; g.introT = g.introHold; g.warp = 1; }, 6000);
-await snap('10pause', () => window.__game.pause());
+await snap('09race', () => { const g = window.__game; g.introT = g.introHold; g.warp = 1; g.opt.subs = true; setTimeout(() => g._subtitle('final_lap', 'es', 4), 5000); }, 6000);
+// a photo finish (forced): the picture with the gap
+await snap('09photo', () => { const g = window.__game, r = g.race; g._photoStart(0, 1); r.racers[0].place = 1; r.racers[1].place = 2; g._photoFreeze(); }, 700);
+await snap('10pause', () => { const g = window.__game; g._photoClear(); g.pause(); });
 await snap('11results', () => {
   const g = window.__game; g.resume();
   const race = g.race; for (let t = 0; t < 400 && race.state !== 'done'; t += 1 / 60) race.step(1 / 60, []);

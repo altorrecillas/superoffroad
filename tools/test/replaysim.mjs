@@ -13,15 +13,16 @@ import { Session } from '../../js/game/session.js';
 import { ReplayRecorder, ReplayPlayer, quantize } from '../../js/game/replay.js';
 import { rng } from '../../js/sim/util.js';
 
-const RACES = +(process.argv[2] || 6);
+const RACES = +(process.argv[2] || 6) + 2; // (the last two: four players, one of them leaving half way)
 const DT = 1 / 120;
 let bad = 0;
 const snap = (race) => race.racers.map((r) => [r.truck.x, r.truck.y, r.truck.z, r.truck.h, r.truck.vx, r.truck.vz, r.truck.nitros, r.prog]);
 for (let n = 0; n < RACES; n++) {
   const [id, reverse] = SEASON[(n * 3) % SEASON.length];
   const track = buildTrack(trackById(id), { reverse });
-  const humans = 1 + (n % 2); // one and two players
-  const s = new Session([{ truckId: 'red' }, { truckId: 'blue', vehicle: 'buggy' }].slice(0, humans), ['easy', 'normal', 'hard', 'arcade'][n % 4]);
+  const four = n >= RACES - 2; // four players on four phones (the grey truck the fourth's), one leaves
+  const humans = four ? 4 : 1 + (n % 2); // one and two players
+  const s = new Session([{ truckId: 'red' }, { truckId: 'blue', vehicle: 'buggy' }, { truckId: 'yellow' }, { truckId: 'grey', vehicle: 'buggy' }].slice(0, humans), ['easy', 'normal', 'hard', 'arcade'][n % 4]);
   s.raceNo = 3 + n;
   const entries = s.entries();
   const opts = { seed: 1000 + n * 17, ...s.raceOpts(), laps: 3, rain: n % 3 === 0 };
@@ -31,8 +32,8 @@ for (let n = 0; n < RACES; n++) {
   const brains = mine.map((r, k) => new AIDriver(r.truck, track, { skill: 0.5 + 0.2 * k, aggression: 0.6, seed: 5 + k }));
   const assists = mine.map((r, k) => (n % 3 ? new SteerAssist(r.truck, track, (n % 3)) : null));
   const r = rng(77 + n);
-  const raw = [0, 1, 2].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false }));
-  const q = [0, 1, 2].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false }));
+  const raw = [0, 1, 2, 3].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false }));
+  const q = [0, 1, 2, 3].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false }));
   const trace = [];
   let steps = 0;
   while (!rec.closed && steps < 120 * 400) {
@@ -47,6 +48,8 @@ for (let n = 0; n < RACES; n++) {
       const u = assists[k] ? assists[k].apply(DT, raw[p]) : raw[p];
       quantize(u, q[p]);
     });
+    // (a game of four: player 3 leaves after 30 s, the CPU takes their truck)
+    if (four && steps === 120 * 30) mine.find((m) => m.entry.player === (n % 2 ? 2 : 3)).bot = true;
     race.step(DT, q);
     rec.step(q, race);
     trace.push(snap(race));
@@ -58,6 +61,7 @@ for (let n = 0; n < RACES; n++) {
   const rp = pl.makeRace();
   let firstDiff = -1;
   for (let k = 0; k < rec.length; k++) {
+    pl.prepare(rp, k);
     rp.step(DT, pl.inputsAt(k));
     if (firstDiff < 0) {
       const a = trace[k], b = snap(rp);
@@ -68,7 +72,7 @@ for (let n = 0; n < RACES; n++) {
   const same = race.finishOrder.map((x) => `${x.i}:${x.finishTime.toFixed(4)}`).join(' ') === rp.finishOrder.map((x) => `${x.i}:${x.finishTime.toFixed(4)}`).join(' ');
   const ok = firstDiff < 0 && same;
   if (!ok) bad++;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${id}${reverse ? ' (inv.)' : ''}${opts.rain ? ' lluvia' : ''} ${humans}P ${s.difficulty.padEnd(6)} assist ${assists[0] ? assists[0].level : 0} · ${rec.length} steps (${(rec.length / 120).toFixed(1)} s) · ${rec.marks.length} marks · resim ${ms.toFixed(0)} ms${firstDiff >= 0 ? ' · first difference at step ' + firstDiff : ''}${same ? '' : ' · different results'}`);
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${id}${reverse ? ' (inv.)' : ''}${opts.rain ? ' lluvia' : ''} ${humans}P${four ? ` (one leaves: ${rec.bots.length} bot)` : ''} ${s.difficulty.padEnd(6)} assist ${assists[0] ? assists[0].level : 0} · ${rec.length} steps (${(rec.length / 120).toFixed(1)} s) · ${rec.marks.length} marks · resim ${ms.toFixed(0)} ms${firstDiff >= 0 ? ' · first difference at step ' + firstDiff : ''}${same ? '' : ' · different results'}`);
 }
 console.log(bad ? `REPLAY FAIL (${bad})` : 'REPLAY OK');
 process.exit(bad ? 1 : 0);

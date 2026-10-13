@@ -1,5 +1,6 @@
-// Two or three players, each on their own phone: the screens to pair them (a room code
-// or QR codes), the lobby, and the championship kept in step. Player 1's phone (the
+// Two to four players, each on their own phone: the screens to pair them (a room code
+// or QR codes), the lobby, the choice of a championship or a quick race (with its
+// rematch), and the game kept in step. Player 1's phone (the
 // host) runs it all: the simulation, the money and the shops. The others (guests) send
 // their controls and draw the race the host sends (js/net/netplay.js), their screens
 // following the host's: results, shop (purchases go through the host), podium and
@@ -7,7 +8,10 @@
 
 import { h, esc } from '../ui/ui.js';
 import { Race, mine } from '../sim/race.js';
-import { Session } from './session.js';
+import { Session, DIFFICULTY, DIFF_ORDER } from './session.js';
+import { PLAYER_TRUCKS, truckDef } from './drivers.js';
+import { TRACKS, trackById } from '../sim/tracks.js';
+import { ACH_ICONS } from '../ui/icons.js';
 import { NetPlay } from '../net/netplay.js';
 import { applyState, writeTruck } from '../net/state.js';
 import { qrCanvas, QRScanner } from '../net/qr.js';
@@ -21,7 +25,7 @@ import { VERSION } from '../version.js';
 const DT = 1 / 120;
 const isTouch = () => matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const WORD = { 2: 'DOS', 3: 'TRES' };
+export const WORD = { 2: 'DOS', 3: 'TRES', 4: 'CUATRO' };
 
 // why a connection did not happen, for people
 function netError(e) {
@@ -159,10 +163,11 @@ export function installNet(Game) {
           if (this.race && !this.race.shadow && this.race.state !== 'done' && this.assistBy) this.assistBy[from] = Math.max(this.assistBy[from] || 0, l);
         });
       } else {
-        on('seat', (m) => { net.local = m.player; });
+        on('seat', (m) => { net.local = m.player | 0; });
         on('lobby', (m) => this._netLobby(m));
         on('race', (m) => this._guestRace(m));
         on('ev', (m) => net.evq.push(m));
+        on('photo', (m) => net.evq.push({ ht: m.ht, e: null, photo: m })); // at that point of the race
         on('introdone', () => { if (this.state === 'intro') this.introT = this.introHold; });
         on('done', (m) => this._guestDone(m));
         on('podium', (m) => { this.session = this._mirror(m.sess); this._fade(() => this.toPodium(m.cup, () => this._netReady('podium'))); });
@@ -170,7 +175,8 @@ export function installNet(Game) {
         on('sess', (m) => this._netSess(m));
         on('gameover', (m) => { this.session = this._mirror(m.sess); this._fade(() => this.toGameOver()); });
         on('cont', () => this.ui.toast('¡Seguimos!', 'money', 1500));
-        on('left', (m) => this.ui.toast(`El jugador ${m.player + 1} ha salido<br><span class="sub">Su camión sigue para la CPU</span>`, 'small warn', 2600));
+        on('again', () => this.audio.announce('rematch'));
+        on('left', (m) => this.ui.toast(`El jugador ${(m.player | 0) + 1} ha salido<br><span class="sub">Su camión sigue para la CPU</span>`, 'small warn', 2600));
       }
       return net;
     },
@@ -269,12 +275,13 @@ export function installNet(Game) {
         reading = false;
       };
     },
-    // someone left while the others were choosing: back to the room, the same code
-    _netBackToRoom() {
+    // someone left while the others were choosing (or player 1 went back): back to the
+    // room, the same code
+    _netBackToRoom(why = 'left') {
       const net = this.net;
       net.locked = false;
-      this._netPicks = null;
-      net.send({ t: 'lobby', p: 'room' });
+      this._netPicks = null; this._netQuick = null;
+      net.send({ t: 'lobby', p: 'room', why });
       this.ui.hideAll();
       this._netRoom();
       this._netBeacon();
@@ -327,8 +334,163 @@ export function installNet(Game) {
       this._netSeats();
       net.lobby = null;
       this.ui.hide('nethost');
-      net.send({ t: 'lobby', p: 'diff' });
-      this.toDifficulty(1 + net.guests.length);
+      this._netModePick();
+    },
+
+    // ---------------------------------------------------------------- what to play
+    // EMPEZAR: a championship or a quick race (the others wait meanwhile)
+    _netModePick() {
+      const net = this.net, n = 1 + net.guests.length;
+      net.send({ t: 'lobby', p: 'mode' });
+      this._netQuick = null;
+      const el = this.ui.show('netmode', `<div class="panel fade-in"><div class="head">¿QUÉ JUGAMOS? <span class="gold" style="font-size:.6em">· ${n} JUGADORES</span></div>
+        <div class="ccards two">
+          <div class="ccard" data-k="champ">${ACH_ICONS.cup}<div class="nm">CAMPEONATO</div><div class="ds">Copas de cuatro carreras con el taller entre medias: créditos, premios y podio.</div></div>
+          <div class="ccard" data-k="quick">${ACH_ICONS.flame}<div class="nm">CARRERA RÁPIDA</div><div class="ds">Una carrera: elegís circuito, vueltas y si corre la CPU. Al acabar, ¡revancha!</div></div>
+        </div>
+        <div class="menu row-menu" style="padding-top:0"><div class="btn" data-k="back">VOLVER A LA SALA</div></div></div>`);
+      const back = () => { this.ui.hide('netmode'); this._netBackToRoom('back'); };
+      this.ui.navigate('netmode', [...el.querySelectorAll('.ccard'), el.querySelector('.btn')], {
+        axis: 'h', grid: 1, start: this.opt.netMode === 'quick' ? 1 : 0,
+        onOk: (i, b) => {
+          const k = b.dataset.k;
+          if (k === 'back') return back();
+          this.opt.netMode = k; this.saveOpt();
+          this.ui.hide('netmode');
+          if (k === 'quick') return this._netQuickSetup();
+          net.send({ t: 'lobby', p: 'diff' });
+          this.toDifficulty(n);
+        },
+        onBack: back,
+      });
+    },
+    // the trucks the players can drive: with four, the grey one of Ironman too
+    _netTrucks() { return this.net && 1 + this.net.guests.length >= 4 ? [...PLAYER_TRUCKS, 'grey'] : PLAYER_TRUCKS; },
+
+    // CARRERA RÁPIDA: the host picks the circuit and how it is run; then each one picks a
+    // vehicle. again: OTRO CIRCUITO after a race (the same vehicles, straight to the grid)
+    _netQuickSetup(again = false) {
+      const net = this.net;
+      const players = () => 1 + net.guests.length; // (someone may leave while this is on screen)
+      const lobby = { t: 'lobby', p: 'quick' };
+      net.send(lobby);
+      // a phone that comes back meanwhile waits too (not in the race that is over)
+      const kept = { race: net.raceMsg, phase: net.phaseMsg };
+      net.raceMsg = null; net.phaseMsg = lobby;
+      const prev = this.session && this.session.free && this.session.free.quick ? this.session.free : null;
+      const q = this._netQuick || (this._netQuick = {
+        id: prev ? prev.id : trackById(this.opt.quickTrack || '') ? this.opt.quickTrack : 'fandango', reverse: prev ? prev.reverse : false,
+        time: 'auto', rain: false, laps: prev && prev.laps ? prev.laps : 3, cpu: prev ? prev.cpu : true, diff: DIFFICULTY[this.opt.difficulty] ? this.opt.difficulty : 'normal',
+      });
+      if (players() >= 4) q.cpu = false; // four players fill the grid
+      const LAPS = [1, 2, 3, 4, 5, 6];
+      const times = ['auto', 'day', 'sunset', 'night'], timeName = { auto: 'DEL CIRCUITO', day: 'DÍA', sunset: 'ATARDECER', night: 'NOCHE' };
+      const rivals = [...DIFF_ORDER, 'none'];
+      const rival = () => (q.cpu ? q.diff : 'none');
+      const rivalName = (k) => (k === 'none' ? 'SIN CPU' : DIFFICULTY[k].name.toUpperCase());
+      const cycle = (a, d) => {
+        if (a === 'laps') q.laps = LAPS[(LAPS.indexOf(q.laps) + d + LAPS.length) % LAPS.length];
+        else if (a === 'rivals' && players() < 4) { const k = rivals[(rivals.indexOf(rival()) + d + rivals.length) % rivals.length]; if (k === 'none') q.cpu = false; else { q.cpu = true; q.diff = k; } }
+        else if (a === 'dir') q.reverse = !q.reverse;
+        else if (a === 'time') q.time = times[(times.indexOf(q.time) + d + times.length) % times.length];
+        else if (a === 'rain') q.rain = !q.rain;
+        else return false;
+        return true;
+      };
+      let first = true; // (only the first one fades in: a change of option repaints it at once)
+      const render = (focus) => {
+        const n = players();
+        const el = this.ui.show('netquick', `
+          <div class="panel${first ? ' fade-in' : ''}" style="max-width:min(1100px,98vw);max-height:100%;overflow:auto">
+            <div class="head">CARRERA RÁPIDA <span class="gold" style="font-size:.72em">· ${esc(trackById(q.id).name)}</span></div>
+            <div class="tracks">${TRACKS.map((d) => `<div class="tcard ${d.id === q.id ? 'sel' : ''}" data-id="${d.id}"><img src="${this._thumb(d.id)}" alt=""><div class="tn">${esc(d.name)}</div><div class="tp">${d.pak ? 'TRACK PAK' : 'ORIGINAL'}</div></div>`).join('')}</div>
+            <div class="menu" style="flex-direction:row;flex-wrap:wrap;justify-content:center;padding-top:4px">
+              <div class="btn" data-a="laps" data-opt>VUELTAS <span class="val">${q.laps}</span></div>
+              <div class="btn${n >= 4 ? ' disabled' : ''}" data-a="rivals" data-opt>RIVALES <span class="val">${n >= 4 ? 'SIN SITIO' : rivalName(rival())}</span></div>
+              <div class="btn" data-a="dir" data-opt>SENTIDO <span class="val">${q.reverse ? 'INVERSO' : 'NORMAL'}</span></div>
+              <div class="btn" data-a="time" data-opt>LUZ <span class="val">${timeName[q.time]}</span></div>
+              <div class="btn" data-a="rain" data-opt>CLIMA <span class="val">${q.rain ? 'LLUVIA' : 'SECO'}</span></div>
+              <div class="btn primary" data-a="go">${again ? '¡A CORRER!' : 'ELEGIR VEHÍCULOS'}</div>
+              <div class="btn" data-a="back">VOLVER</div>
+            </div>
+          </div>`);
+        first = false;
+        const all = [...el.querySelectorAll('.tcard'), ...el.querySelectorAll('.btn')];
+        const start = Math.max(0, all.findIndex((e) => (focus ? e.dataset.a === focus || e.dataset.id === focus : e.dataset.id === q.id)));
+        const cols = getComputedStyle(el.querySelector('.tracks')).gridTemplateColumns.split(' ').length || 4;
+        const nav = this.ui.navigate('netquick', all, {
+          start, grid: cols,
+          onOk: (i, e) => {
+            if (e.dataset.id) { q.id = e.dataset.id; render(q.id); return; }
+            const a = e.dataset.a;
+            if (cycle(a, 1)) return render(a);
+            if (a === 'go') return this._netQuickGo(again);
+            if (a === 'back') {
+              this.ui.hide('netquick');
+              if (!again) return this._netModePick();
+              // back to the results, on every phone
+              net.raceMsg = kept.race; net.phaseMsg = kept.phase;
+              this._resultsAgain && this._resultsAgain();
+              if (net.phaseMsg) net.send({ ...net.phaseMsg, now: true });
+            }
+          },
+          onRight: (i, e) => { if (cycle(e.dataset.a, 1)) render(e.dataset.a); },
+          onLeft: (i, e) => { if (cycle(e.dataset.a, -1)) render(e.dataset.a); },
+          onBack: () => { const b = all.find((x) => x.dataset.a === 'back'); if (b) nav.onOk(all.indexOf(b), b); },
+        });
+        if (focus && !all[start].dataset.id) nav.focus(start, true);
+      };
+      render();
+    },
+    _netQuickGo(again) {
+      const q = this._netQuick, net = this.net;
+      this.opt.quickTrack = q.id; this.saveOpt();
+      this.ui.hide('netquick');
+      const diff = q.cpu ? q.diff : 'normal';
+      if (!again) {
+        // the vehicles, each one on its own phone in turn (as for a championship)
+        this.toSelect(1, diff, {
+          title: 'JUGADOR 1: ELIGE TU VEHÍCULO', trucks: this._netTrucks(), done: (pick) => this._netHostPicked(pick, diff),
+          back: () => this._netQuickSetup(),
+        });
+        return;
+      }
+      // OTRO CIRCUITO: the same players and vehicles on a new grid
+      const s = this.session;
+      s.free = { id: q.id, reverse: q.reverse, time: q.time === 'auto' ? null : q.time, rain: q.rain, laps: q.laps, quick: true, cpu: q.cpu };
+      s.difficulty = diff; s.diff = DIFFICULTY[diff];
+      this._netAgain(false);
+    },
+    // everyone chose: the quick race starts
+    _netQuickStart(picks) {
+      const q = this._netQuick, net = this.net;
+      this._fade(() => {
+        this.ui.hideAll();
+        this.attract = false; this.attractTick = null; this.freeSetup = null;
+        const free = { id: q.id, reverse: q.reverse, time: q.time === 'auto' ? null : q.time, rain: q.rain, laps: q.laps, quick: true, cpu: q.cpu };
+        this.session = new Session(picks.map((p, i) => ({ truckId: p.truckId, vehicle: p.vehicle, livery: p.livery || this._livery(i) })), q.cpu ? q.diff : 'normal', 'all', free);
+        this.session.net = true; net.started = true;
+        this._quickReset();
+        this.nextRace();
+      });
+    },
+    // a quick race starts the same for everyone: mid-level garages, ten nitros (and only
+    // the players still in the game drive)
+    _quickReset() {
+      const s = this.session, net = this.net;
+      s.raceNo = 6; // a field from the middle of a championship
+      for (const p of s.players) {
+        Object.assign(p, { upgrades: { tires: 2, shocks: 2, accel: 2, speed: 2 }, nitros: 10, money: 0, credits: 3 });
+        p.alive = p.index === 0 || !net || !!net.peerOf(p.index);
+      }
+    },
+    // REVANCHA (all ready) or OTRO CIRCUITO: the quick race again
+    _netAgain(rematch = true) {
+      const net = this.net;
+      net.ready.again = null;
+      this._quickReset();
+      if (rematch) { net.send({ t: 'again' }); this.audio.announce('rematch'); }
+      this._fade(() => { this.ui.hideAll(); this.view.setActive(null, null); this.stateTick = null; this.nextRace(); });
     },
 
     // ---------------------------------------------------------------- joining
@@ -346,10 +508,12 @@ export function installNet(Game) {
       const paint = () => boxes.forEach((b, i) => { b.textContent = code[i] || ''; b.classList.toggle('cur', i === code.length && !busy); });
       const leave = () => { window.removeEventListener('keydown', keys, true); };
       const cancel = () => { leave(); this.ui.hide('netjoin'); this.netLeave(false); this.toNetMenu(n); };
-      const go = async () => {
-        if (busy || code.length < 4) return;
+      // (a connection that does not get through, once more by itself before giving up:
+      // a busy phone or WiFi can make the first try miss)
+      const go = async (again = false) => {
+        if ((busy && !again) || code.length < 4) return;
         busy = true; paint();
-        msg.innerHTML = `<i class="spin"></i>Conectando con la partida ${code}…`;
+        msg.innerHTML = `<i class="spin"></i>${again ? 'Otro intento' : 'Conectando'} con la partida ${code}…`;
         const net = this._netNew('guest');
         try {
           await net.joinCode(code);
@@ -360,6 +524,7 @@ export function installNet(Game) {
           if (this.net !== net) return;
           net.log('join failed:', e.message, net.peers.map((p) => p.link.pc.iceConnectionState));
           this.netLeave(false);
+          if (e.message === 'nolink' && !again && this.ui.get('netjoin')) { go(true); return; }
           busy = false; code = ''; paint();
           msg.textContent = netError(e);
           this.audio.ui('deny');
@@ -448,19 +613,30 @@ export function installNet(Game) {
       const el = this.ui.show('netwait', `<div class="panel fade-in net-panel"><div class="head">${title}</div>
         <div class="netstatus"><i class="spin"></i>${text}</div>
         <div class="menu row-menu" style="padding-top:2px"><div class="btn" data-a="quit">SALIR DE LA PARTIDA</div></div></div>`);
-      this.ui.navigate('netwait', [el.querySelector('.btn')], { onOk: () => this._netQuit(), onBack: () => this._netQuit() });
+      this.ui.navigate('netwait', [el.querySelector('.btn')], { onOk: () => this._netQuit(), onBack: () => this._netBackTwice() });
+    },
+    // the phone's back gesture leaves a game only when made twice (a slip would drop the
+    // player out of the others' game)
+    _netBackTwice() {
+      const now = performance.now();
+      if (now - (this._backAt || 0) < 2500) { this._backAt = 0; this._netQuit(); return; }
+      this._backAt = now;
+      this.ui.toast('Pulsa ATRÁS otra vez para salir de la partida', 'small', 2000);
     },
     // guest: what the host is doing in the lobby
     _netLobby(m) {
-      if (m.p === 'room') this._netWait('¡CONECTADO!', `Eres el <b>JUGADOR ${this.net.local + 1}</b>. Alguien se ha ido: esperando a que el jugador 1 vuelva a empezar…`);
+      if (m.p === 'room') this._netWait('¡CONECTADO!', `Eres el <b>JUGADOR ${this.net.local + 1}</b>. ${m.why === 'back' ? 'El jugador 1 ha vuelto a la sala' : 'Alguien se ha ido'}: esperando a que vuelva a empezar…`);
+      else if (m.p === 'mode') this._netWait('PREPARANDO LA PARTIDA', 'El jugador 1 está eligiendo: campeonato o carrera rápida…');
+      else if (m.p === 'quick') this._netWait('CARRERA RÁPIDA', 'El jugador 1 está eligiendo el circuito…');
       else if (m.p === 'diff') this._netWait('PREPARANDO LA PARTIDA', 'El jugador 1 está eligiendo la dificultad…');
-      else if (m.p === 'picking') this._netWait('PREPARANDO LA PARTIDA', `El jugador ${m.player + 1} está eligiendo su vehículo…`);
+      else if (m.p === 'picking') this._netWait('PREPARANDO LA PARTIDA', `El jugador ${(m.player | 0) + 1} está eligiendo su vehículo…`);
       else if (m.p === 'select') {
         this.ui.hideAll();
         this.toSelect(1, m.diff, {
           taken: m.taken, title: `JUGADOR ${this.net.local + 1}: ELIGE TU VEHÍCULO`,
-          done: (pick) => { this.net.send({ t: 'pick', truckId: pick.truckId, vehicle: pick.vehicle, livery: this._livery(0) }); this._netWait('¡LISTO!', 'Empieza el campeonato…'); },
-          back: () => this._netQuit(),
+          trucks: Array.isArray(m.trucks) ? m.trucks.filter((id) => truckDef(id)) : undefined,
+          done: (pick) => { this.net.send({ t: 'pick', truckId: pick.truckId, vehicle: pick.vehicle, livery: this._livery(0) }); this._netWait('¡LISTO!', m.quick ? 'Empieza la carrera…' : 'Empieza el campeonato…'); },
+          back: () => { this._netBackTwice(); return false; },
         });
       }
     },
@@ -482,9 +658,9 @@ export function installNet(Game) {
     _netNextPick() {
       const net = this.net, picks = this._netPicks;
       const players = [0, ...net.guests.map((p) => p.player)];
-      if (picks.length >= players.length) { this._netSeats(); this.startChampionship(picks, this._netDiff); return; }
+      if (picks.length >= players.length) { this._netSeats(); if (this._netQuick) this._netQuickStart(picks); else this.startChampionship(picks, this._netDiff); return; }
       const p = players[picks.length];
-      net.sendTo(p, { t: 'lobby', p: 'select', diff: this._netDiff, taken: picks });
+      net.sendTo(p, { t: 'lobby', p: 'select', diff: this._netDiff, taken: picks, trucks: this._netTrucks(), quick: !!this._netQuick });
       net.send({ t: 'lobby', p: 'picking', player: p }, [p]);
       this._netWait('PREPARANDO LA PARTIDA', `El jugador ${p + 1} está eligiendo su vehículo…`);
     },
@@ -492,7 +668,7 @@ export function installNet(Game) {
       const picks = this._netPicks;
       if (!picks || from !== picks.length || this.net.started) return;
       const truckId = typeof m.truckId === 'string' ? m.truckId : '';
-      if (picks.some((q) => q.truckId === truckId) || !['red', 'blue', 'yellow'].includes(truckId)) { this._netNextPick(); return; } // taken meanwhile: again
+      if (picks.some((q) => q.truckId === truckId) || !this._netTrucks().includes(truckId)) { this._netNextPick(); return; } // taken meanwhile: again
       picks.push({ truckId, vehicle: m.vehicle === 'buggy' ? 'buggy' : 'truck', livery: m.livery });
       this._netNextPick();
     },
@@ -547,6 +723,7 @@ export function installNet(Game) {
       const host = this.net && this.net.role === 'host';
       if ((this.state === 'race' || this.state === 'intro') && !this.paused) this.pause(!host);
       this.ui.hide('netwait');
+      if (!this.ui.get('netlost')) this._lostNav = this.ui.nav; // (the screen under it, to give its keys back)
       const el = this.ui.show('netlost', `<div class="panel fade-in net-panel"><div class="head">${title}</div>
         <div class="nethelp">${text}</div>${host ? '<div class="netstatus"><i class="spin"></i>Esperando…</div>' : ''}
         <div class="menu row-menu" style="padding-top:2px">${host ? '<div class="btn primary" data-a="solo">SEGUIR SIN ÉL</div>' : ''}<div class="btn" data-a="quit">SALIR</div></div></div>`);
@@ -554,10 +731,17 @@ export function installNet(Game) {
         axis: 'h',
         onOk: (i, b) => {
           if (b.dataset.a !== 'solo') return this._netQuit();
-          this.ui.hide('netlost');
+          this._hideLost();
           this._netWithout(player, '');
         },
       });
+    },
+    // the notice of a lost link gone: the screen under it answers the keys again
+    _hideLost() {
+      this.ui.hide('netlost');
+      const nav = this._lostNav;
+      this._lostNav = null;
+      if (nav && !this.ui.nav) this.ui.resume(nav);
     },
     // host: on without that player; their truck is the CPU's from now on. With nobody
     // left the championship is player 1's alone (and saved again like any other)
@@ -575,8 +759,9 @@ export function installNet(Game) {
       }
       // the last guest gone: an ordinary championship from here
       this.netLeave(false);
-      if (this.session) this.session.net = false;
-      this.ui.hide('netwait');
+      if (this.session) { this.session.net = false; this.session.solo = true; } // (the others' trucks stay the CPU's)
+      if (this.session && this.session.free) this.session.free.cpu = true; // (a quick race without the CPU: not alone from now on)
+      this.ui.hide('netwait'); this.ui.hide('netquick');
       if (this.state === 'results' && this._resultsAgain) this._resultsAgain();
       else if (this.state === 'shop') this.toShop(0);
       else if (this.state === 'podium' && !this.ui.get('podium')) this.toShop(0);
@@ -599,21 +784,22 @@ export function installNet(Game) {
     async _netRetry() {
       const net = this.net;
       if ((this.state === 'race' || this.state === 'intro') && !this.paused) this.pause(true);
+      if (!this.ui.get('netlost')) this._lostNav = this.ui.nav;
       const el = this.ui.show('netlost', `<div class="panel fade-in net-panel"><div class="head">RECONECTANDO…</div>
         <div class="netstatus"><i class="spin"></i>Volviendo a la partida ${net.code}…</div>
         <div class="menu row-menu" style="padding-top:2px"><div class="btn" data-a="quit">SALIR</div></div></div>`);
-      this.ui.navigate('netlost', [el.querySelector('.btn')], { onOk: () => this._netQuit(), onBack: () => this._netQuit() });
+      this.ui.navigate('netlost', [el.querySelector('.btn')], { onOk: () => this._netQuit(), onBack: () => this._netBackTwice() });
       for (let i = 0; i < 15 && this.net === net && !net.open; i++) {
         try { await net.joinCode(net.code); } catch (e) { if (e.message === 'busy' || e.message === 'full') break; await sleep(3000); }
       }
       if (this.net !== net) return;
-      if (net.open) { this.ui.hide('netlost'); this.ui.toast('¡Reconectado!', 'money', 1500); return; }
+      if (net.open) { this._hideLost(); this.ui.toast('¡Reconectado!', 'money', 1500); return; }
       el.querySelector('.netstatus').textContent = 'No se ha podido volver a la partida.';
     },
     // host: a guest is back: everything it needs to rebuild its screen
     _netRejoined(p) {
       const net = this.net;
-      this.ui.hide('netlost');
+      this._hideLost();
       this.ui.toast(`¡El jugador ${p + 1} ha vuelto!`, 'money', 1800);
       if (net.raceMsg) net.sendTo(p, { ...net.raceMsg, resume: true });
       if (net.phaseMsg) net.sendTo(p, { ...net.phaseMsg, now: true });
@@ -632,10 +818,17 @@ export function installNet(Game) {
       this.attract = false; this.attractTick = null; this.stateTick = null; this.freeSetup = null;
       this.view.setActive(null, null);
       this.session = this._mirror(m.sess);
+      this._photoClear();
       const track = this.world.loadTrack(m.id, m.reverse, m.time, !!m.rain);
       this.audio.setRain(!!m.rain);
       // the other players' trucks are rivals here; this phone drives only its own
-      const entries = m.entries.map((e) => (e.human && e.player !== net.local ? { ...e, human: false, remote: true } : { ...e, remote: false }));
+      // (what came from the other phone, made safe to show: names as plain text, known trucks)
+      const plain = (v) => String(v == null ? '' : v).replace(/[<>&]/g, '').slice(0, 40); // (names go in as text)
+      const entries = (Array.isArray(m.entries) ? m.entries : []).slice(0, 4).map((e0) => {
+        const e = { ...e0, name: plain(e0.name), short: plain(e0.short), truckId: truckDef(e0.truckId) ? e0.truckId : 'red', vehicle: e0.vehicle === 'buggy' ? 'buggy' : 'truck' };
+        if (e.human) e.player = e0.player | 0;
+        return e.human && e.player !== net.local ? { ...e, human: false, remote: true } : { ...e, remote: false };
+      });
       this.input.solo = true;
       for (let p = 0; p < 3; p++) this.input.autoGas[p] = !!this.opt.autoGas && p === 0;
       this.race = new Race(track, entries, { laps: m.laps, pickups: false, rain: !!m.rain, seed: 1 });
@@ -675,12 +868,12 @@ export function installNet(Game) {
       if (!net || !race) return;
       const me = race.racers.find(mine), P = this._pred;
       // ours is predicted while we drive it (after the line the host's autopilot has it)
-      const pred = !!(P && me && P.ready && !me.finished && race.state !== 'done');
+      const pred = !!(P && me && P.ready && !me.finished && race.state !== 'done' && !this.photo);
       const rt = net.clock.render(performance.now());
       const s = net.around(rt);
       if (s) { applyState(race, s[0], s[1], s[2], pred ? me.i : -1); net.trim(rt); }
       this.acc = DT; // the world draws this state as it is
-      while (net.evq.length && net.evq[0].ht <= rt) this._netEvents(net.evq.shift().e);
+      while (net.evq.length && net.evq[0].ht <= rt) { const q = net.evq.shift(); if (q.photo) this._photoRemote(q.photo); else this._netEvents(q.e); }
       this._raceTick(race);
       if (this.state !== 'race' && this.state !== 'intro') return;
       const inp = this.input.get(0);
@@ -693,7 +886,7 @@ export function installNet(Game) {
       const raw = { steer: me ? steer : 0, throttle: me ? inp.throttle : 0, brake: me ? inp.brake : 0, nitro: !!(me && inp.nitro) };
       net.sendInput(raw.steer, raw.throttle, raw.brake, raw.nitro);
       this.input.consumeNitro();
-      if (P && me) this._predict(dt, raw, net.iseq, net.last, me);
+      if (P && me && !this.photo) this._predict(dt, raw, net.iseq, net.last, me);
     },
 
     // Client-side prediction: our truck is simulated here with our own controls (the
@@ -769,7 +962,7 @@ export function installNet(Game) {
         this.career.race({
           place: row.place, finished: !!row.time, humans: S.rows.filter((r) => r.human).length, difficulty: this.session.difficulty, vehicle: L.me.entry.vehicle,
           night: this.world.timeName === 'night', nitro: L.nitro, walls: L.walls, bags: L.me.money, lastInFinal: L.lastInFinal,
-          track: this.race.track.id, km: L.me.prog / 1000, streak: me ? me.streak || 0 : 0, free: false,
+          track: this.race.track.id, km: L.me.prog / 1000, streak: me ? me.streak || 0 : 0, free: !!this.session.free,
         });
         if (me) this.career.score(me.earned);
       }
@@ -835,6 +1028,7 @@ export function installNet(Game) {
         }
         this._netShop();
       } else if (k === 'podium') this._netShop();
+      else if (k === 'again') this._netAgain();
       else if (k === 'shop') this._fade(() => { this.ui.hideAll(); this.view.setActive(null, null); this.stateTick = null; this.nextRace(); });
     },
     // host: every phone to its shop

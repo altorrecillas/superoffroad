@@ -18,7 +18,7 @@ const key = async (k, n = 1) => { for (let i = 0; i < n; i++) { await page.keybo
 try {
   await waitState('title', 90000);
   await key('Enter'); await waitState('menu');
-  await key('ArrowDown', 3); await key('Enter'); await waitState('free');
+  await key('ArrowDown', 4); await key('Enter'); await waitState('free'); // (1, 2, 3, 4 JUGADORES, CARRERA LIBRE)
   // the grid has 4 or 8 columns depending on the screen: pick by identity
   const pick = async (sel) => { await page.click(sel); await page.waitForTimeout(250); };
   await pick('.tcard[data-id=volcano]');                       // Volcano Valley

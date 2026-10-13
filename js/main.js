@@ -1,6 +1,7 @@
 // Super Off Road · Remastered — entry point.
 import { Game } from './game/game.js';
 
+window.__booting = true; // (index.html: the code did start)
 const game = new Game();
 window.__game = game;
 
@@ -23,5 +24,9 @@ game.boot().then(() => {
 }).catch((e) => {
   console.error(e);
   const l = document.querySelector('#loading .hint');
-  if (l) l.textContent = 'Error al cargar: ' + (e && e.message ? e.message : e);
+  const msg = e && e.message ? e.message : String(e);
+  // (no 3D at all: say what to do, not the browser's technical message)
+  if (l) l.textContent = /webgl|context/i.test(msg)
+    ? 'Este navegador no puede mostrar gráficos 3D (WebGL). Actualízalo, prueba con Chrome o Safari, o activa la aceleración por hardware en sus ajustes.'
+    : 'Error al cargar: ' + msg + '. Recarga la página.';
 });

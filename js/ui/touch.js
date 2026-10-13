@@ -157,44 +157,136 @@ export class Touch {
     this.layout();
   }
 
+  // the screen the pad lives in: clear of the notch, the rounded corners and the home bar
+  _area() { const si = safeInsets(); return { si, W: innerWidth - si.left - si.right, H: innerHeight - si.bottom }; }
+
   layout() {
     if (!this.visible || !this.els) return;
-    // keep clear of the notch, the rounded corners and the home bar
-    const si = safeInsets();
-    const W = innerWidth - si.left - si.right, H = innerHeight - si.bottom;
+    const { si, W, H } = this._area();
     // button size option (CONTROLES: PEQUEÑOS / NORMALES / GRANDES)
     const k = { s: 0.84, m: 1, l: 1.18 }[this.opt.touchSize] || 1;
     const s = Math.max(56, Math.min(128, Math.min(W, H) * 0.2 * k));
     const pad = Math.max(14, s * 0.18);
     // left-handed: steering on the right, gas and nitro on the left
     const mirror = this.opt.touchSide === 'left';
-    const place = (el, x, y, size) => {
+    // the player's own arrangement (COLOCAR BOTONES): the centre of each place, in
+    // fractions of the screen as a right-handed player has it (mirrored like the rest),
+    // and its size against the usual one
+    const own = (this.opt.touchLayout || {})[this.mode] || {};
+    this._box = {};
+    const place = (slot, el, x, y, size) => {
       if (!el) return;
+      const c = own[slot];
+      if (c) { size = Math.max(44, Math.min(Math.min(W, H) * 0.62, size * (c.k || 1))); x = c.x * W - size / 2; y = c.y * H - size / 2; }
+      x = Math.max(0, Math.min(W - size, x)); y = Math.max(0, Math.min(H - size, y));
+      this._box[slot] = { x, y, size };
+      el.dataset.slot = slot;
+      el.classList.toggle('sel', !!this.editing && this.sel === slot);
       Object.assign(el.style, { width: size + 'px', height: size + 'px', left: ((mirror ? W - x - size : x) + si.left) + 'px', top: y + 'px' });
     };
     if (this.mode === 'tilt') {
-      place(this.els.brake, pad, H - s * 1.1 - pad, s * 1.1);
+      place('brake', this.els.brake, pad, H - s * 1.1 - pad, s * 1.1);
       const n2 = s * 0.86;
-      place(this.els.nitro2, pad + (s * 1.1 - n2) / 2, H - s * 1.1 - pad - Math.max(10, pad * 0.75) - n2, n2);
-      place(this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
-      place(this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
+      place('nitro2', this.els.nitro2, pad + (s * 1.1 - n2) / 2, H - s * 1.1 - pad - Math.max(10, pad * 0.75) - n2, n2);
+      place('gas', this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
+      place('nitro', this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
       const tw = Math.min(W * 0.34, 260);
       Object.assign(this.els.tilt.style, { width: tw + 'px', left: (si.left + (W - tw) / 2) + 'px', top: (H - pad - 18) + 'px' });
     } else if (this.mode === 'stick') {
       const ss = s * 1.7;
-      place(this.els.stick, pad + 10, H - ss - pad, ss);
-      place(this.els.nitro, W - s * 1.15 - pad, H - s * 1.15 - pad, s * 1.15);
-      place(this.els.brake, W - s * 2.2 - pad * 1.5, H - s * 0.9 - pad, s * 0.9);
+      place('stick', this.els.stick, pad + 10, H - ss - pad, ss);
+      place('nitro', this.els.nitro, W - s * 1.15 - pad, H - s * 1.15 - pad, s * 1.15);
+      place('brake', this.els.brake, W - s * 2.2 - pad * 1.5, H - s * 0.9 - pad, s * 0.9);
     } else {
-      // mirrored, the pair keeps ◀ on the left of ▶
-      place(mirror ? this.els.right : this.els.left, pad, H - s - pad, s);
-      place(mirror ? this.els.left : this.els.right, pad + s + pad * 0.8, H - s - pad, s);
+      // mirrored, the pair keeps ◀ on the left of ▶ (the places are the outer and the inner one)
+      place('steer1', mirror ? this.els.right : this.els.left, pad, H - s - pad, s);
+      place('steer2', mirror ? this.els.left : this.els.right, pad + s + pad * 0.8, H - s - pad, s);
       // centred over the pair, with a gap so a thumb on ◀ ▶ does not catch it
       const n2 = s * 0.86, pairMid = pad + s + pad * 0.4;
-      place(this.els.nitro2, pairMid - n2 / 2, H - s - pad - Math.max(10, pad * 0.75) - n2, n2);
-      place(this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
-      place(this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
+      place('nitro2', this.els.nitro2, pairMid - n2 / 2, H - s - pad - Math.max(10, pad * 0.75) - n2, n2);
+      place('gas', this.els.gas, W - s * 1.2 - pad, H - s * 1.2 - pad, s * 1.2);
+      place('nitro', this.els.nitro, W - s * 2.15 - pad * 1.6, H - s * 0.95 - pad, s * 0.95);
     }
+  }
+
+  // ---------------------------------------------------------------- COLOCAR BOTONES
+  // The pad over the screen with its buttons loose: drag each one where the thumbs
+  // want it; the one touched last is picked and grows or shrinks with resize().
+  // Saved in the options, per kind of control (onchange() after every change).
+  edit(on) {
+    if (on === !!this.editing) return;
+    if (on) {
+      this._wasVisible = this.visible;
+      this.editing = true;
+      this.show(true);
+      if (!this.visible) { this.editing = false; return; }
+      this.root.classList.add('edit');
+      this._ed = { down: (e) => this._edDown(e), move: (e) => this._edMove(e), up: (e) => this._edUp(e) };
+      // (captured before the buttons' own handlers: nothing is pressed while editing)
+      this.root.addEventListener('pointerdown', this._ed.down, true);
+      window.addEventListener('pointermove', this._ed.move, true);
+      window.addEventListener('pointerup', this._ed.up, true);
+      window.addEventListener('pointercancel', this._ed.up, true);
+      this.pick(this._box.gas ? 'gas' : Object.keys(this._box)[0]);
+    } else {
+      this.root.removeEventListener('pointerdown', this._ed.down, true);
+      window.removeEventListener('pointermove', this._ed.move, true);
+      window.removeEventListener('pointerup', this._ed.up, true);
+      window.removeEventListener('pointercancel', this._ed.up, true);
+      this.editing = false; this._drag = null;
+      this.root.classList.remove('edit');
+      this.show(this._wasVisible);
+    }
+  }
+  pick(slot) { this.sel = slot; this.layout(); }
+  get custom() { return !!(this.opt.touchLayout && this.opt.touchLayout[this.mode] && Object.keys(this.opt.touchLayout[this.mode]).length); }
+  // the picked button, f times bigger (within reason)
+  resize(f) {
+    const c = this._own(this.sel);
+    if (!c) return;
+    c.k = Math.max(0.6, Math.min(1.9, (c.k || 1) * f));
+    this.layout();
+    if (this.onchange) this.onchange();
+  }
+  resetLayout() {
+    if (this.opt.touchLayout) delete this.opt.touchLayout[this.mode];
+    this.layout();
+    if (this.onchange) this.onchange();
+  }
+  // a place's own entry, made from where it is now
+  _own(slot) {
+    const b = this._box && this._box[slot];
+    if (!b) return null;
+    const { W, H } = this._area();
+    const L = (this.opt.touchLayout = this.opt.touchLayout || {});
+    const M = (L[this.mode] = L[this.mode] || {});
+    if (!M[slot]) M[slot] = { x: (b.x + b.size / 2) / W, y: (b.y + b.size / 2) / H, k: 1 };
+    return M[slot];
+  }
+  _edDown(e) {
+    const el = e.target.closest && e.target.closest('[data-slot]');
+    if (!el || !this.root.contains(el)) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = el.getBoundingClientRect();
+    this._drag = { id: e.pointerId, slot: el.dataset.slot, dx: e.clientX - (r.left + r.width / 2), dy: e.clientY - (r.top + r.height / 2) };
+    this.pick(el.dataset.slot);
+  }
+  _edMove(e) {
+    const d = this._drag;
+    if (!d || e.pointerId !== d.id) return;
+    e.preventDefault(); e.stopPropagation();
+    const { si, W, H } = this._area();
+    let cx = e.clientX - d.dx - si.left;
+    const cy = e.clientY - d.dy;
+    if (this.opt.touchSide === 'left') cx = W - cx;
+    const c = this._own(d.slot);
+    c.x = Math.max(0, Math.min(1, cx / W)); c.y = Math.max(0, Math.min(1, cy / H));
+    this.layout();
+  }
+  _edUp(e) {
+    if (!this._drag || e.pointerId !== this._drag.id) return;
+    this._drag = null;
+    if (this.onchange) this.onchange();
   }
 
   _hold(el, fn) {
@@ -211,9 +303,11 @@ export class Touch {
   // other without lifting (each finger steers towards the side it is over)
   _steerPad(L, R) {
     const fingers = new Map(); // pointerId -> -1 | 1
-    const side = (x) => {
+    // the nearer of the two (they can be anywhere: COLOCAR BOTONES)
+    const side = (x, y) => {
       const a = L.getBoundingClientRect(), b = R.getBoundingClientRect();
-      return x > (a.right + b.left) / 2 ? 1 : -1;
+      const da = Math.hypot(x - (a.left + a.right) / 2, y - (a.top + a.bottom) / 2), db = Math.hypot(x - (b.left + b.right) / 2, y - (b.top + b.bottom) / 2);
+      return db < da ? 1 : -1;
     };
     const apply = () => {
       let l = 0, r = 0;
@@ -225,12 +319,12 @@ export class Touch {
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         try { el.setPointerCapture(e.pointerId); } catch (x) { /* */ }
-        fingers.set(e.pointerId, side(e.clientX));
+        fingers.set(e.pointerId, side(e.clientX, e.clientY));
         apply();
       });
       el.addEventListener('pointermove', (e) => {
         if (!fingers.has(e.pointerId)) return;
-        const v = side(e.clientX);
+        const v = side(e.clientX, e.clientY);
         if (v !== fingers.get(e.pointerId)) { fingers.set(e.pointerId, v); apply(); }
       });
       const up = (e) => { if (fingers.delete(e.pointerId)) apply(); };

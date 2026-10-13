@@ -3,8 +3,8 @@
 
 import { TruckSim, truckStats, collideTrucks } from './truck.js';
 import { AIDriver } from './ai.js';
-import { randomTrackSpot } from './track.js';
-import { rng, clamp } from './util.js';
+import { randomTrackSpot, WALL_FACE } from './track.js';
+import { rng, clamp, wrapAngle } from './util.js';
 
 export const LAPS = 4;
 // a human truck driven from this device: in a two-phone race the other player's
@@ -75,7 +75,9 @@ export class Race {
         else t.throttle = Math.sin(this.time * (5 + r.i) + r.i * 2) > 0.2 ? 1 : 0;
         continue;
       }
-      if (r.finished && r.human) {
+      // the race over: the winner celebrates, the rest roll to a stop out of its way
+      if (this.state === 'done' && this.donuts !== false) inp = r === this.finishOrder[0] && !r.dnf ? this._donut(r, dt) : this._parking(r, dt, trucks);
+      else if (r.finished && r.human) {
         // cool-down lap on autopilot
         if (!r.ai) r.ai = new AIDriver(t, tr, { skill: 0.35, aggression: 0, seed: 99 + r.i });
         inp = r.ai.update(dt, trucks);
@@ -217,6 +219,53 @@ export class Race {
       }
     }
     this.pickups = this.pickups.filter((p) => !p.taken);
+  }
+
+  // The race over, the winner celebrates: donuts round a point where the barriers are
+  // far enough (most circuits are a corridor of ten metres): it rolls on calmly along
+  // the middle of the track, stops and spins a few turns, then stays put. The same in
+  // every replay of the race (nothing random).
+  _donut(r, dt) {
+    const t = r.truck, tr = this.track, p = tr.path;
+    const D = r.donut || (r.donut = { phase: 'seek', t: 0, spun: 0 });
+    const roomAt = (x, z) => WALL_FACE - tr.sdfAt(x, z); // to the nearest barrier
+    const flat = !t.air && t.hAbove < 0.1 && t.water < 0.05;
+    // towards the middle of the track a few metres ahead
+    const j = (r.idx + Math.round(7 / p.ds)) % p.n;
+    const steer = clamp(wrapAngle(Math.atan2(p.z[j] - t.z, p.x[j] - t.x) - t.h) * 2.2, -1, 1);
+    D.t += dt;
+    if (D.phase === 'seek') {
+      if (D.t > 0.8 && roomAt(t.x, t.z) > 4.1 && flat) { D.phase = 'stop'; D.t = 0; }
+      else return { steer, throttle: t.speed < 6 ? 0.6 : 0, brake: t.speed > 9 ? 0.6 : 0, nitro: false };
+    }
+    if (D.phase === 'stop') {
+      if (t.speed > 1.6) return { steer, throttle: 0, brake: t.vf > 0.8 ? 1 : 0, nitro: false }; // (the brake reverses below that)
+      // the point to go round: beside the truck, on the side with more room (the truck
+      // reaches 1 + 2.5 m from it)
+      const R = 1, rx = -Math.sin(t.h), rz = Math.cos(t.h);
+      let best = null;
+      for (const s of [1, -1]) {
+        const cx = t.x + rx * s * R, cz = t.z + rz * s * R, room = roomAt(cx, cz);
+        if (!best || room > best.room) best = { cx, cz, room, s };
+      }
+      if (best.room < 3.8 || !flat) { D.phase = 'seek'; D.t = 0; return { steer, throttle: 0.6, brake: 0, nitro: false }; }
+      Object.assign(D, { phase: 'spin', cx: best.cx, cz: best.cz, s: best.s, r: R });
+    }
+    if (D.phase === 'spin') {
+      D.spun += dt;
+      // the tail swings out, a few turns, and it slows to a stop
+      if (D.spun < 6.5) return { steer: D.s, throttle: 1, brake: 0, nitro: false, spin: true, cx: D.cx, cz: D.cz, r: D.r, k: Math.min(1, D.spun / 0.6), wk: Math.min(1, (6.5 - D.spun) / 0.7) };
+      D.phase = 'end';
+      t.vx = t.vz = 0; t.w = 0;
+    }
+    return { steer: 0, throttle: 0, brake: t.vf > 0.8 ? 1 : 0, nitro: false };
+  }
+
+  _parking(r, dt, trucks) {
+    if (!r.ai) r.ai = new AIDriver(r.truck, this.track, { skill: 0.35, aggression: 0, seed: 99 + r.i });
+    const inp = r.ai.update(dt, trucks); // (its steering, along the track)
+    inp.nitro = false; inp.throttle = 0; inp.brake = r.truck.vf > 0.8 ? 0.7 : 0; // (at a crawl the brake would reverse)
+    return inp;
   }
 
   _finishRace() {

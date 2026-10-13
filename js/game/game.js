@@ -34,9 +34,15 @@ import {
   loadScores, qualifies, addScore, fmtMoney, saveRun, loadRun, clearRun,
 } from './session.js';
 import { VERSION } from '../version.js';
-import { installNet } from './netgame.js';
+import { installNet, WORD } from './netgame.js';
+import { VOICE_LINES } from '../audio/voicelines.js';
+import { installPhotoFinish } from './photofinish.js';
+import { LensDirt } from '../render/lens.js';
 
 const DT = 1 / 120;
+const COAST = { steer: 0, throttle: 0, brake: 0, nitro: false }; // a fourth player's place, on four phones
+// a truck's colour from data that may have come from another phone: a colour or nothing
+const cssOf = (c, truckId) => (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : (truckDef(truckId) || truckDef('red')).css);
 // the Track Pak let you pick the body: bars are relative (ACEL, VEL, AGARRE, AMORT)
 const VEHICLE_INFO = {
   truck: { name: 'CAMIÓN', bars: [3, 4, 4, 2], desc: 'Pesado: más agarre y velocidad punta, y gana los empujones.' },
@@ -105,12 +111,25 @@ function trackThumb(def) {
   return c.toDataURL('image/png');
 }
 
+// The options a value must be one of. Saved options that are not (damaged, or from an
+// older version) go back to their default instead of breaking the game.
+const OPT_VALUES = {
+  quality: ['auto', 'low', 'medium', 'high'], camera: ['classic', 'zoom', 'follow'], touch: ['buttons', 'stick', 'tilt'], touchSide: ['right', 'left'],
+  touchSize: ['s', 'm', 'l'], nitroPos: ['both', 'gas', 'steer'], voice: ['es', 'en', false], assist: ['off', 'soft', 'strong'],
+  pack: ['all', 'classic', 'pak'], vehicle: ['truck', 'buggy'], lastTruck: PLAYER_TRUCKS, netMode: ['champ', 'quick'],
+};
+const OPT_BOOL = ['autoGas', 'fps', 'haptics', 'fullscreen', 'guide', 'subs', 'cvd'];
+const OPT_RANGE = { music: [0, 10, true], sfx: [0, 10, true], zoomLevel: [0.3, 1], followZoom: [0.6, 1.8] };
+
 export class Game {
   constructor() {
-    this.opt = Object.assign({
-      quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', nitroPos: 'both', autoGas: false, fps: false, voice: true, haptics: true, fullscreen: true,
-      assist: isTouch() ? 'soft' : 'off', difficulty: 'normal', guide: true,
-    }, this._loadOpt());
+    const defaults = {
+      quality: 'auto', camera: isTouch() ? 'zoom' : 'classic', music: 7, sfx: 8, touch: 'buttons', touchSide: 'right', touchSize: 'm', nitroPos: 'both', autoGas: false, fps: false, voice: 'es', haptics: true, fullscreen: true,
+      assist: isTouch() ? 'soft' : 'off', difficulty: 'normal', guide: true, subs: false, cvd: false,
+    };
+    this.opt = Object.assign({}, defaults, this._loadOpt());
+    if (this.opt.voice === true) this.opt.voice = 'es'; // (before v0.70 the announcer was only on or off, in English)
+    this._cleanOpt(defaults);
     if (!DIFFICULTY[this.opt.difficulty]) this.opt.difficulty = 'normal';
     if (ASSIST_LEVELS[this.opt.assist] == null) this.opt.assist = 'off';
     this.state = 'boot';
@@ -120,7 +139,31 @@ export class Game {
     this.frameEvents = [];
     this.net = null; // a two-phone game (js/game/netgame.js)
   }
-  _loadOpt() { try { return JSON.parse(localStorage.getItem(LS_OPT)) || {}; } catch (e) { return {}; } }
+  _loadOpt() { try { const o = JSON.parse(localStorage.getItem(LS_OPT)); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
+  // every saved option back within what the game understands
+  _cleanOpt(defaults) {
+    const o = this.opt;
+    for (const [k, vals] of Object.entries(OPT_VALUES)) if (k in o && !vals.includes(o[k])) { if (k in defaults) o[k] = defaults[k]; else delete o[k]; }
+    for (const k of OPT_BOOL) if (typeof o[k] !== 'boolean') o[k] = defaults[k];
+    for (const [k, [lo, hi, int]] of Object.entries(OPT_RANGE)) {
+      if (!(k in o)) continue;
+      const v = o[k];
+      if (typeof v !== 'number' || !isFinite(v) || v < lo || v > hi || (int && !Number.isInteger(v))) { if (k in defaults) o[k] = defaults[k]; else delete o[k]; }
+    }
+    if (o.liveries != null && !Array.isArray(o.liveries)) delete o.liveries;
+    // COLOCAR BOTONES: only places with numbers that make sense
+    const L = o.touchLayout;
+    if (L != null && (typeof L !== 'object' || Array.isArray(L))) delete o.touchLayout;
+    else if (L) {
+      for (const [mode, M] of Object.entries(L)) {
+        if (!['buttons', 'stick', 'tilt'].includes(mode) || !M || typeof M !== 'object') { delete L[mode]; continue; }
+        for (const [slot, c] of Object.entries(M)) {
+          const ok = c && [c.x, c.y].every((v) => typeof v === 'number' && v >= 0 && v <= 1) && typeof c.k === 'number' && c.k >= 0.5 && c.k <= 2;
+          if (!ok) delete M[slot];
+        }
+      }
+    }
+  }
   saveOpt() { try { localStorage.setItem(LS_OPT, JSON.stringify(this.opt)); } catch (e) { /* ignore */ } }
 
   // ------------------------------------------------------------------ boot
@@ -139,6 +182,7 @@ export class Game {
     this.input = new Input();
     this.haptics = new Haptics(this.input, this.opt);
     this.audio = new Audio(this.opt);
+    this.audio.onsay = (key, lang, dur) => this._subtitle(key, lang, dur);
     this.ui = new UI(document.getElementById('ui'), this.input, (s) => {
       this.audio.ui(s);
       if ((s === 'ok' || s === 'back' || s === 'deny') && this.opt.haptics !== false && isTouch() && navigator.vibrate) { try { navigator.vibrate(s === 'deny' ? [8, 40, 8] : 8); } catch (e) { /* */ } }
@@ -156,6 +200,8 @@ export class Game {
     };
     this.world = new RaceWorld(this.view);
     this.world.onThunder = () => this.audio.thunder();
+    this.lens = new LensDirt();
+    this._applyCvd();
     this.logoImg = new Image(); // signs the replay photos
     this.logoImg.src = 'assets/ui/logo.webp';
     // the classic view keeps the strip under the HUD board free of track
@@ -171,7 +217,7 @@ export class Game {
     this.garage = new Garage(this.view, this.world.templates);
     try {
       this.portraits = this.garage.portraits(['red', 'blue', 'yellow', 'grey']);
-      this.portraitsBuggy = this.garage.portraits(PLAYER_TRUCKS, 'buggy');
+      this.portraitsBuggy = this.garage.portraits([...PLAYER_TRUCKS, 'grey'], 'buggy'); // (grey: four players on four phones)
     } catch (e) { console.warn('portraits', e); this.portraits = {}; this.portraitsBuggy = {}; }
     prog(0.6, 'Cargando sonido…');
     await this.audio.load((p) => prog(0.6 + p * 0.3));
@@ -244,7 +290,22 @@ export class Game {
   _truckPos(i) { const t = this.race.racers[i].truck; return new THREE.Vector3(t.x, t.y, t.z); }
 
   // ------------------------------------------------------------------ main loop
+  // One frame of the game. An error anywhere in it is reported and the next frame comes
+  // anyway: a page that stopped drawing would be the end of the game for the player.
   frame(now) {
+    let go = true;
+    try { go = this._frame(now) !== false; } catch (e) { this._frameError(e); }
+    if (go) requestAnimationFrame((t) => this.frame(t));
+  }
+  _frameError(e) {
+    // each different error once (one that repeats every frame would flood the console)
+    const key = String((e && e.stack) || e).slice(0, 300);
+    this._errSeen = this._errSeen || new Set();
+    if (this._errSeen.has(key)) return;
+    this._errSeen.add(key);
+    console.error('[frame]', e);
+  }
+  _frame(now) {
     // rAF timestamps can be earlier than a performance.now() taken just before: never negative
     const dt = Math.max(0, Math.min(0.1, (now - this.last) / 1000));
     this.last = now;
@@ -259,12 +320,18 @@ export class Game {
     const hidden = this.state === 'shop' || this.state === 'podium';
     if (!rv && this.race && !this.paused && !hidden) { if (this.race.shadow) this._guestFrame(dt); else this.stepRace(dt); }
     if (this.net) this._netPingTick(dt);
+    if (this.photo) this._photoTick(dt);
     if (this.race && !hidden) {
-      const vdt = rv ? rv.dt : this.paused ? 0 : dt;
+      // (the photo finish: the world in slow motion too, still for the picture)
+      const vdt = rv ? rv.dt : this.paused ? 0 : dt * this._photoK();
       this.world.update(vdt, rv ? rv.alpha : this.acc / DT);
       if (this.world.props && this.world.props.userData.update) this.world.props.userData.update(vdt, this.race);
       if (this.world.water && this.world.water.userData.update) this.world.water.userData.update(dt, this.world.terrain.userData.fieldTex);
       if (this.state === 'race' || this.state === 'intro') this.hud.update(dt, this.view.camera, this.world, this.state === 'intro');
+      // mud and drops on the lens of the chase camera, on this device's truck
+      // (not over the photo finish's picture)
+      const chased = this.state === 'race' && !this.paused && !(this.photo && this.photo.shown) && this.world.camMode === 'follow' && this.race.racers[this.world.camOpts.index ?? 0];
+      this.lens.update(dt, mine(chased) ? chased : null, this.race.racers);
       if (this.state === 'race') this.hud.countdown(this.race);
       this.audio.update(dt, this.race, this.view.camera, this.paused || this.attract || (this.state === 'intro' && this.introT < 1.5));
     }
@@ -279,20 +346,20 @@ export class Game {
     if (draw && !(this.portraitMQ && this.portraitMQ.matches && isTouch())) { this.view.render(dt); this._drawn = now; }
     // a new circuit built and drawn: the other phones can stop waiting for our silence
     if (draw && this._sendLoaded && --this._sendLoaded === 0 && this.net) this.net.send({ t: 'loaded' });
-    if (this.testFrames && --this.testFrames <= 0) { window.__ready = true; this.testFrames = 0; window.__shotInfo = { fps: this.fps, build: this.world.buildMs }; return; }
-    requestAnimationFrame((t) => this.frame(t));
+    if (this.testFrames && --this.testFrames <= 0) { window.__ready = true; this.testFrames = 0; window.__shotInfo = { fps: this.fps, build: this.world.buildMs }; return false; }
+    return true;
   }
 
   stepRace(dt) {
     const race = this.race;
     if (this.state === 'intro' && this.introT < this.introHold) return; // race clock waits for the intro
     const warp = this.warp || 1;
-    this.acc += dt * warp;
+    this.acc += dt * warp * this._photoK(); // the photo finish's slow motion
     let n = 0;
     this.frameEvents.length = 0;
-    const inputs = [this.input.get(0), this.input.get(1), this.input.get(2)];
+    const inputs = [this.input.get(0), this.input.get(1), this.input.get(2), COAST];
     // a race on several phones: the other players' controls come from their phones
-    if (this.net && this.net.role === 'host') for (let p = 1; p < 3; p++) { const ri = this.net.remoteInput(p); if (ri) inputs[p] = ri; }
+    if (this.net && this.net.role === 'host') for (let p = 1; p < 4; p++) { const ri = this.net.remoteInput(p); if (ri) inputs[p] = ri; }
     // touch "point to steer": convert a target heading into steering for player 1
     const p0 = inputs[0];
     if (p0.targetHeading != null && race) {
@@ -305,10 +372,10 @@ export class Game {
     }
     // what the simulation gets: the input after the steering assist, rounded to what the
     // replay stores (so the replay is exactly this race)
-    const q = this._stepIn || (this._stepIn = [0, 1, 2].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false })));
+    const q = this._stepIn || (this._stepIn = [0, 1, 2, 3].map(() => ({ steer: 0, throttle: 0, brake: 0, nitro: false })));
     while (this.acc >= DT && n < 12 * warp) {
       this.world.savePrev();
-      for (let p = 0; p < 3; p++) {
+      for (let p = 0; p < 4; p++) {
         const a = this.assists && this.assists[p];
         quantize(a && race.state === 'race' ? a.apply(DT, inputs[p]) : inputs[p], q[p]);
       }
@@ -321,8 +388,10 @@ export class Game {
       this.acc -= DT; n++;
     }
     if (n >= 12 * warp) this.acc = 0;
-    // the other phone gets the race as it is now and what happened in it
-    if (n && this.net && this.net.role === 'host' && !this.attract) this.net.sendRace(race, this.frameEvents);
+    if (n) this._photoCheck(race);
+    // the other phone gets the race as it is now and what happened in it (also while the
+    // photo finish holds it still: an unchanged race, not silence)
+    if ((n || this.photo) && this.net && this.net.role === 'host' && !this.attract) this.net.sendRace(race, this.frameEvents);
     if (this.frameEvents.length) {
       this.world.handleEvents(this.frameEvents);
       this.audio.handle(this.frameEvents, race);
@@ -410,6 +479,24 @@ export class Game {
     if (a === 'mute') { this.audio.toggleMute(); this.ui.toast(this.audio.muted ? 'Sonido desactivado' : 'Sonido activado', 'small', 900); return true; }
     return false;
   }
+  // the announcer's words at the bottom of the screen (option SUBTÍTULOS); null: away
+  _subtitle(key, lang = 'es', dur = 1) {
+    clearTimeout(this._subT);
+    const el = this._subEl;
+    if (!key || !this.opt.subs) { if (el) el.classList.remove('on'); return; }
+    const lines = VOICE_LINES[lang] || VOICE_LINES.es;
+    const text = key.startsWith('track_') ? `¡${(trackById(key.slice(6)) || {}).name || ''}!` : lines[key];
+    if (!text) return;
+    if (!el) { this._subEl = h('<div id="subs"><small>LOCUTOR</small><span></span></div>'); document.body.appendChild(this._subEl); }
+    this._subEl.querySelector('span').textContent = text;
+    this._subEl.classList.add('on');
+    this._subT = setTimeout(() => this._subEl.classList.remove('on'), Math.max(1300, dur * 1000 + 900));
+  }
+  // option COLORES DALTONISMO: blue, yellow and orange where green and red say good and bad
+  _applyCvd() {
+    document.body.classList.toggle('cvd', !!this.opt.cvd);
+    this.world.setPalette(this.opt.cvd ? 'cvd' : 'normal');
+  }
   _fpsShow() {
     if (!this.opt.fps) { if (this.fpsEl) { this.fpsEl.remove(); this.fpsEl = null; } return; }
     if (!this.fpsEl) { this.fpsEl = h('<div style="position:fixed;left:8px;bottom:6px;z-index:40;font:16px monospace;color:#0f0;text-shadow:0 1px 2px #000"></div>'); document.body.appendChild(this.fpsEl); }
@@ -421,6 +508,7 @@ export class Game {
     // the other phones: a few busy seconds while a circuit is built and its first frames
     // drawn (also the demo race behind the menus, while they wait in a room)
     if (this.net) { this.net.send({ t: 'loading' }); this._sendLoaded = 3; }
+    this._photoClear();
     const track = this.world.loadTrack(id, reverse, opts.time, !!opts.rain);
     this.audio.setRain(!!opts.rain);
     const bug = trackById(id).pak ? Math.floor(Math.random() * 3) : -1;
@@ -436,7 +524,8 @@ export class Game {
     const trial = !this.attract && !!(this.session.free && this.session.free.trial);
     const daily = trial && this.session.free.daily;
     const tutorial = !this.attract && !!(this.session.free && this.session.free.tutorial);
-    const laps = opts.laps ?? (tutorial ? 9 : params.get('laps') ? +params.get('laps') : trial ? this.session.free.laps || 3 : undefined);
+    // (a quick race on several phones sets its own laps, like the time trials)
+    const laps = opts.laps ?? (tutorial ? 9 : params.get('laps') ? +params.get('laps') : !this.attract && this.session.free && this.session.free.laps ? this.session.free.laps : trial ? 3 : undefined);
     const ropts = { seed, ...this.session.raceOpts(), laps, pickups: tutorial ? 'manual' : !trial, rain: !!opts.rain };
     this.race = new Race(track, entries, ropts);
     for (const r of this.race.racers) if (r.entry.remote) r.remote = true;
@@ -522,8 +611,9 @@ export class Game {
     const def = trackById(id);
     const tr = this.trial;
     const C = this.session.cup;
-    this.ui.show('intro', `<div class="banner"><div class="race">${tutorial ? 'TUTORIAL' : tr ? 'CONTRARRELOJ' : this.session.free ? 'CARRERA LIBRE' : `${cupName(C.no)} · CARRERA ${C.race + 1}/${CUP_SIZE}`}${def.pak ? ' · TRACK PAK' : ''}</div><div class="track">${esc(def.name)}</div>
-      <div class="sub">${tutorial ? 'APRENDE LO BÁSICO EN UNA VUELTA' : `${opts.rain ? 'LLUVIA · ' : ''}${reverse ? 'SENTIDO INVERSO · ' : ''}${this.race.laps} ${this.race.laps === 1 ? 'VUELTA' : 'VUELTAS'} · ${tr ? (tr.rec ? `RÉCORD ${fmtTime(tr.rec.t)} · CON FANTASMA` : 'SIN RÉCORD AÚN') : DIFFICULTY[this.session.difficulty].name.toUpperCase()}`}</div>
+    const F = this.session.free;
+    this.ui.show('intro', `<div class="banner"><div class="race">${tutorial ? 'TUTORIAL' : tr ? 'CONTRARRELOJ' : F ? (F.quick ? 'CARRERA RÁPIDA' : 'CARRERA LIBRE') : `${cupName(C.no)} · CARRERA ${C.race + 1}/${CUP_SIZE}`}${def.pak ? ' · TRACK PAK' : ''}</div><div class="track">${esc(def.name)}</div>
+      <div class="sub">${tutorial ? 'APRENDE LO BÁSICO EN UNA VUELTA' : `${opts.rain ? 'LLUVIA · ' : ''}${reverse ? 'SENTIDO INVERSO · ' : ''}${this.race.laps} ${this.race.laps === 1 ? 'VUELTA' : 'VUELTAS'} · ${tr ? (tr.rec ? `RÉCORD ${fmtTime(tr.rec.t)} · CON FANTASMA` : 'SIN RÉCORD AÚN') : F && F.cpu === false ? 'SIN CPU' : DIFFICULTY[this.session.difficulty].name.toUpperCase()}`}</div>
       ${tiltNote ? `<div class="howto no">${tiltNote}</div>` : this.session.raceNo === 0 && !this.session.free && (this.session.players.length === 1 || this.net) ? `<div class="howto">${this._controlsLine()}</div>` : ''}</div>`, 'passive');
     this.audio.music('race');
     this.audio.announce('track_' + id);
@@ -540,6 +630,7 @@ export class Game {
   _callout(ev) {
     const r = this.race.racers[ev[1]];
     if (!mine(r) || this.race.racers.filter(mine).length !== 1) return;
+    if (ev[0] === 'land' && this.world.camMode === 'follow') this.lens.land(Math.min(1, (ev[2] - 5) / 8)); // a hard landing splashes the lens
     if (ev[0] === 'land' && ev[3] > 0.68) this.audio.announce('big_air', true); // the longest jumps of the game last ~0.75 s
     else if (ev[0] === 'wrongway') this.audio.announce('wrong_way', true);
   }
@@ -853,8 +944,10 @@ export class Game {
     };
   }
 
-  // back to the menus with the attract race running behind
+  // back to the menus with the attract race running behind (the caller shows the next
+  // screen; until then this is the menus, not a race: ESC must not pause anything)
   toTitleQuiet() {
+    this.state = 'menu';
     this.hud.destroy();
     this.touch.show(false);
     this.session = new Session([], 'normal');
@@ -909,7 +1002,7 @@ export class Game {
       </div>
       <div class="press blink">${isTouch() ? 'TOCA PARA EMPEZAR' : 'PULSA ENTER PARA EMPEZAR'}</div>
       ${needsHomeScreen() ? '<div class="ios-tip">Para jugar a pantalla completa en el iPhone: <b>Compartir</b> → <b>Añadir a pantalla de inicio</b></div>' : ''}
-      <div class="foot"><span>1-3 JUGADORES</span><span>16 CIRCUITOS · 32 CONFIGURACIONES</span><span>RÉCORD ${fmtMoney(loadScores()[0].score)}</span></div>
+      <div class="foot"><span>1-4 JUGADORES</span><span>16 CIRCUITOS · 32 CONFIGURACIONES</span><span>RÉCORD ${fmtMoney(loadScores()[0].score)}</span></div>
       <div class="ver">v${VERSION}</div>`);
     const go = (e) => { if (e) e.preventDefault(); this.audio.unlock(); this.audio.ui('ok'); if (this.opt.fullscreen !== false) enterFullscreen(); this.toMenu(); };
     el.addEventListener('click', go, { once: true });
@@ -957,6 +1050,7 @@ export class Game {
           <div class="btn" data-a="p1">1 JUGADOR</div>
           <div class="btn" data-a="p2">2 JUGADORES</div>
           <div class="btn" data-a="p3">3 JUGADORES</div>
+          <div class="btn" data-a="p4">4 JUGADORES</div>
           <div class="btn" data-a="free">CARRERA LIBRE</div>
           <div class="btn gold-btn" data-a="daily">DESAFÍO DEL DÍA</div>
           <div class="btn" data-a="pack" data-opt>CIRCUITOS <span class="val"></span></div>
@@ -982,6 +1076,7 @@ export class Game {
         const a = b.dataset.a;
         if (a === 'cont') this.continueRun();
         else if (a === 'p2' || a === 'p3') { const n = +a[1]; this.toMultiPlayers(n, () => (run ? this._newRunAsk(run, () => fresh(n)) : fresh(n))); }
+        else if (a === 'p4') { this.ui.hide('menu'); this.toNetMenu(4); } // four: only on four phones
         else if (a === 'p1') { if (run) this._newRunAsk(run, () => fresh(1)); else fresh(1); }
         else if (a === 'free') { this.ui.hide('menu'); this.toFreeRace(); }
         else if (a === 'daily') this.toDaily();
@@ -1066,9 +1161,10 @@ export class Game {
     const power = { easy: 1, normal: 2, hard: 4, arcade: 5 };
     const rivals = { easy: 'Te esperan', normal: 'Se adaptan', hard: 'Aprietan', arcade: 'Implacables' };
     const assist = ASSIST_LEVELS[this.opt.assist] || 0;
+    const full = n >= 4; // four players fill the grid: no CPU, so no Ironman to beat
     const el = this.ui.show('diff', `
       <div class="panel fade-in" style="max-width:min(1180px,98vw)">
-        <div class="head">ELIGE LA DIFICULTAD <span class="gold" style="font-size:.6em">· ${n} ${n > 1 ? 'JUGADORES' : 'JUGADOR'}${this.net ? ` · EN ${n === 3 ? 'TRES' : 'DOS'} MÓVILES` : ''}</span></div>
+        <div class="head">ELIGE LA DIFICULTAD <span class="gold" style="font-size:.6em">· ${n} ${n > 1 ? 'JUGADORES' : 'JUGADOR'}${this.net ? ` · EN ${WORD[n] || n} MÓVILES` : ''}</span></div>
         <div class="dcards">${DIFF_ORDER.map((k) => {
           const d = DIFFICULTY[k];
           return `<div class="dcard d-${k}" data-k="${k}">
@@ -1077,13 +1173,13 @@ export class Game {
             <div class="nm">${d.name.toUpperCase()}</div>
             <div class="ds">${d.desc}</div>
             <div class="facts">
-              <div class="rule">Pierdes un crédito ${rule[d.rule]}</div>
-              <div><span>Rivales</span><b>${rivals[k]}</b></div>
+              <div class="rule">Pierdes un crédito ${full ? rule.last : rule[d.rule]}</div>
+              <div><span>Rivales</span><b>${full ? 'Sin CPU' : rivals[k]}</b></div>
               <div><span>Premios</span><b class="gold">×${String(d.prize).replace('.', ',')}</b></div>
             </div>
           </div>`;
         }).join('')}</div>
-        <div class="hint-keys">${assist ? `Dirección asistida ${assist > 1 ? 'fuerte (premios −20 %)' : 'suave (premios −10 %)'}: cámbiala en Opciones.` : 'Sin dirección asistida: cámbiala en Opciones si juegas en el móvil.'}${isTouch() ? '' : '<br>← → ELEGIR · ENTER ACEPTAR · ESC VOLVER'}</div>
+        <div class="hint-keys">${full ? 'Cuatro jugadores: sin camiones de la CPU, el nivel solo cambia los premios.<br>' : ''}${assist ? `Dirección asistida ${assist > 1 ? 'fuerte (premios −20 %)' : 'suave (premios −10 %)'}: cámbiala en Opciones.` : 'Sin dirección asistida: cámbiala en Opciones si juegas en el móvil.'}${isTouch() ? '' : '<br>← → ELEGIR · ENTER ACEPTAR · ESC VOLVER'}</div>
       </div>`);
     const cards = [...el.querySelectorAll('.dcard')];
     this.ui.navigate('diff', cards, {
@@ -1094,16 +1190,17 @@ export class Game {
         this.ui.hide('diff');
         if (this.net) {
           this.toSelect(1, k, {
-            title: 'JUGADOR 1: ELIGE TU VEHÍCULO', done: (pick) => this._netHostPicked(pick, k),
-            back: () => { this.net.send({ t: 'lobby', p: 'diff' }); this.toDifficulty(2); },
+            title: 'JUGADOR 1: ELIGE TU VEHÍCULO', trucks: this._netTrucks(), done: (pick) => this._netHostPicked(pick, k),
+            back: () => { this.net.send({ t: 'lobby', p: 'diff' }); this.toDifficulty(1 + this.net.guests.length); },
           });
         } else this.toSelect(n, k);
       },
-      onBack: () => { this.ui.hide('diff'); if (this.net) this._netQuit(); else this.toMenu(); },
+      onBack: () => { this.ui.hide('diff'); if (this.net) this._netModePick(); else this.toMenu(); },
     });
   }
 
-  // o (a two-phone game): taken (picks made on the other phone), title, done(pick), back()
+  // o (a game on several phones): taken (picks made on the other phones), title, trucks
+  // (the ones to choose from), done(pick), back()
   toSelect(n, diff, o = {}) {
     this.ui.hide('menu');
     const picks = (o.taken || []).filter(Boolean).slice();
@@ -1119,17 +1216,17 @@ export class Game {
             <div class="vtabs">${Object.keys(VEHICLE_INFO).map((v) => `<div class="vtab" data-v="${v}">${VEHICLE_INFO[v].name}</div>`).join('')}</div>
             <div class="vstats"></div>
           </div>
-          <div class="cards" style="padding:0 18px">
-            ${PLAYER_TRUCKS.map((id) => {
+          <div class="cards${(o.trucks || PLAYER_TRUCKS).length > 3 ? ' four' : ''}" style="padding:0 18px">
+            ${(o.trucks || PLAYER_TRUCKS).map((id) => {
               const d = truckDef(id), taken = picks.findIndex((q) => q.truckId === id);
               return `<div class="card ${taken >= 0 ? 'disabled taken' : ''}" data-id="${id}">
                 ${taken >= 0 ? `<div class="tag">${taken + 1}P</div>` : ''}
                 ${this.portraits && this.portraits[id] ? '<div class="pic"></div>' : `<div class="sw" style="background:${d.css}">${d.number}</div>`}
                 <div class="nm">${d.name.toUpperCase()}</div>
-                <div class="who">${taken >= 0 ? 'Elegido' : 'Rival: ' + esc(d.cpu.name)}</div></div>`;
+                <div class="who">${taken >= 0 ? 'Elegido' : d.cpu.ironman ? 'El de Ironman' : 'Rival: ' + esc(d.cpu.name)}</div></div>`;
             }).join('')}
           </div>
-          <div class="hint-keys">${isTouch() ? 'Toca CAMIÓN o BUGGY para cambiar de vehículo' : '← → COLOR · ↑ ↓ CAMIÓN / BUGGY · ENTER ACEPTAR'}<br>El camión gris es siempre de Ivan "Ironman" Stewart.${n > 1 && !o.done ? '<br>' + this._controlsHint(p) : ''}</div>
+          <div class="hint-keys">${isTouch() ? 'Toca CAMIÓN o BUGGY para cambiar de vehículo' : '← → COLOR · ↑ ↓ CAMIÓN / BUGGY · ENTER ACEPTAR'}<br>${(o.trucks || PLAYER_TRUCKS).includes('grey') ? 'Con cuatro jugadores, hasta el camión gris de Ironman tiene piloto.' : 'El camión gris es siempre de Ivan "Ironman" Stewart.'}${n > 1 && !o.done ? '<br>' + this._controlsHint(p) : ''}</div>
         </div>`);
       const cards = [...el.querySelectorAll('.card')];
       const paint = () => {
@@ -1159,8 +1256,10 @@ export class Game {
         },
         onBack: () => {
           if (picks.length > first) { picks.pop(); ask(); return; }
+          // (o.back() false: the screen stays, e.g. the first of two backs that leave a game)
+          if (o.back) { if (o.back() !== false) this.ui.hide('select'); return; }
           this.ui.hide('select');
-          if (o.back) o.back(); else if (this.freeSetup) this.toFreeRace(); else this.toDifficulty(n);
+          if (this.freeSetup) this.toFreeRace(); else this.toDifficulty(n);
         },
       });
     };
@@ -1299,6 +1398,7 @@ export class Game {
     const cycleDiff = (d) => { sel.diff = DIFF_ORDER[(DIFF_ORDER.indexOf(sel.diff) + d + DIFF_ORDER.length) % DIFF_ORDER.length]; this.opt.freeDiff = sel.diff; this.saveOpt(); };
     const times = ['auto', 'day', 'sunset', 'night'], timeName = { auto: 'DEL CIRCUITO', day: 'DÍA', sunset: 'ATARDECER', night: 'NOCHE' };
     const thumbs = Object.fromEntries(TRACKS.map((d) => [d.id, this._thumb(d.id)]));
+    let first = true; // (only the first one fades in: a change of option repaints it at once)
     const render = (focusId) => {
       // cards show the best lap (race) or the best run with its ghost (time trial)
       const recs = loadLaps(), runs = ghostTimes(), medals = loadMedals();
@@ -1310,7 +1410,7 @@ export class Game {
         const r = recs[lapKey(d.id, sel.reverse)]; return r ? 'MEJOR ' + fmtTime(r.t) : '&nbsp;';
       };
       const el = this.ui.show('free', `
-        <div class="panel fade-in" style="max-width:min(1100px,98vw);max-height:100%;overflow:auto">
+        <div class="panel${first ? ' fade-in' : ''}" style="max-width:min(1100px,98vw);max-height:100%;overflow:auto">
           <div class="head">${sel.trial ? 'CONTRARRELOJ' : 'CARRERA LIBRE'} <span class="gold" style="font-size:.72em">· ${esc(trackById(sel.id).name)}</span></div>
           <div class="tracks">${TRACKS.map((d) => `
             <div class="tcard ${d.id === sel.id ? 'sel' : ''}" data-id="${d.id}">
@@ -1326,6 +1426,7 @@ export class Game {
             <div class="btn primary" data-a="go">ELEGIR VEHÍCULO</div>
           </div>
         </div>`);
+      first = false;
       const cards = [...el.querySelectorAll('.tcard')], btns = [...el.querySelectorAll('.btn')];
       const all = [...cards, ...btns];
       const start = Math.max(0, all.findIndex((e) => e.dataset.id === (focusId || sel.id)));
@@ -1386,29 +1487,35 @@ export class Game {
     const rows = summary.rows;
     const fastest = Math.min(...rows.map((r) => r.bestLap || Infinity)); // the race's fastest lap
     const net = this.net, me = (r) => r.human && (!net || r.player === net.local); // this phone's row
+    // a single race pays nothing that lasts: the gap to the winner instead of the prize
+    const single = !!this.session.free, wt = rows[0] && rows[0].time;
+    const gapTo = (r) => (r.place === 1 || !r.time || !wt ? '—' : '+' + (r.time - wt).toFixed(2).replace('.', ','));
     const html = `
       <div class="panel fade-in" style="max-width:96vw">
-        <div class="head">${this.session.free ? `CARRERA LIBRE · ${esc(trackById(this.session.free.id).name).toUpperCase()}` : summary.cup ? `${summary.cup.name} · CARRERA ${summary.cup.race}/${summary.cup.of}` : `RESULTADOS · CARRERA ${summary.raceNo + 1}`}</div>
+        <div class="head">${this.session.free ? `${this.session.free.quick ? 'CARRERA RÁPIDA' : 'CARRERA LIBRE'} · ${esc(trackById(this.session.free.id).name).toUpperCase()}` : summary.cup ? `${esc(summary.cup.name)} · CARRERA ${summary.cup.race | 0}/${summary.cup.of | 0}` : `RESULTADOS · CARRERA ${(summary.raceNo | 0) + 1}`}</div>
         <div class="table" style="padding:4px 18px 8px">
-          <div class="hd">POS</div><div class="hd">PILOTO</div><div class="hd">TIEMPO</div><div class="hd">MEJOR</div><div class="hd">PREMIO</div>
+          <div class="hd">POS</div><div class="hd">PILOTO</div><div class="hd">TIEMPO</div><div class="hd">MEJOR</div><div class="hd">${single ? 'DIF.' : 'PREMIO'}</div>
           ${rows.map((r) => {
-            const d = { css: r.css || truckDef(r.truckId).css }, pl = summary.players.find((x) => x.place === r.place && r.human);
+            const d = { css: cssOf(r.css, r.truckId) }, pl = summary.players.find((x) => x.place === r.place && r.human);
             const fast = r.bestLap && r.bestLap === fastest;
             return `<div class="place ${me(r) ? 'me' : ''}">${r.place}º</div>
               <div class="${me(r) ? 'me' : ''}"><span class="chip" style="background:${d.css}"></span>${esc(r.name)}</div>
               <div class="${me(r) ? 'me' : ''}">${r.time ? fmtTime(r.time) : '—'}</div>
               <div class="${me(r) ? 'me' : ''}${fast ? ' fast' : ''}">${r.bestLap ? fmtTime(r.bestLap) : '—'}</div>
-              <div class="${me(r) ? 'me gold' : r.human ? 'gold' : 'muted'}">${pl ? fmtMoney(pl.prize + pl.bags) : ''}</div>`;
+              ${single ? `<div class="${me(r) ? 'me' : 'muted'}">${gapTo(r)}</div>` : `<div class="${me(r) ? 'me gold' : r.human ? 'gold' : 'muted'}">${pl ? fmtMoney(pl.prize + pl.bags) : ''}</div>`}`;
           }).join('')}
         </div>
-        ${this._cupHTML(summary)}${this._lapRecordHTML()}${this.session.free ? '' : this._multHTML(summary)}${summary.advice ? `<div class="laprec advice">${summary.advice}</div>` : ''}
-        <div class="verdict">${this.session.free ? summary.players.map((p) => `<div class="${p.place === 1 ? 'ok' : ''}"><span class="big">${p.place === 1 ? '¡Victoria!' : p.place + 'º puesto'}</span></div>`).join('') : summary.players.map((p) => {
+        ${this._cupHTML(summary)}${this._lapRecordHTML()}${this.session.free ? '' : this._multHTML(summary)}${summary.advice ? `<div class="laprec advice">${esc(summary.advice)}</div>` : ''}
+        <div class="verdict">${this.session.free ? summary.players.filter((p) => !net || p.index === net.local).map((p) => `<div class="${p.place === 1 ? 'ok' : ''}"><span class="big">${p.place === 1 ? '¡Victoria!' : p.place + 'º puesto'}</span></div>`).join('') : summary.players.map((p) => {
           const pl = this.session.players[p.index];
           const tag = net ? (p.index === net.local ? 'TÚ · ' : `${p.index + 1}P · `) : this.session.players.length > 1 ? `${p.index + 1}P · ` : '';
-          if (p.lost) return `<div class="bad"><span class="big">${tag}${p.credits > 0 ? '¡Pierdes un crédito!' : '¡Sin créditos!'}</span><br>${this._lostReason()} · Te ${p.credits === 1 ? 'queda 1 crédito' : `quedan ${p.credits} créditos`}</div>`;
+          if (p.lost) return `<div class="bad"><span class="big">${tag}${p.credits > 0 ? '¡Pierdes un crédito!' : '¡Sin créditos!'}</span><br>${this._lostReason(summary.rule)} · Te ${p.credits === 1 ? 'queda 1 crédito' : `quedan ${p.credits} créditos`}</div>`;
           return `<div class="ok"><span class="big">${tag}${p.place === 1 ? '¡Victoria!' : 'Sigues en carrera'}</span><br>Premio ${fmtMoney(p.prize)}${p.bags ? ` + bolsas ${fmtMoney(p.bags)}` : ''} · Créditos ${p.credits}</div>`;
         }).join('')}</div>
-        <div class="menu row-menu" style="padding-top:0">${this.session.free
+        <div class="menu row-menu" style="padding-top:0">${this.session.free && net
+          // a quick race on several phones: the rematch when everyone is ready; player 1 can change circuit
+          ? `<div class="btn primary" data-a="again">REVANCHA</div>${net.role === 'host' ? `<div class="btn" data-a="other">OTRO CIRCUITO</div>${this._replayBtn()}` : ''}<div class="btn" data-a="quit">SALIR</div>`
+          : this.session.free
           ? `<div class="btn primary" data-a="again">CORRER OTRA VEZ</div>${this._replayBtn()}<div class="btn" data-a="other">OTRO CIRCUITO</div><div class="btn" data-a="menu">MENÚ PRINCIPAL</div>`
           : `<div class="btn primary" data-a="cont">CONTINUAR</div>${this._replayBtn()}`}</div>
       </div>`;
@@ -1416,13 +1523,26 @@ export class Game {
     const el = this.ui.show('results', html);
     this.audio.music('results');
     this._resultsAgain = () => this.showResults(summary);
+    if (free && net) {
+      this.ui.navigate('results', [...el.querySelectorAll('.btn')], {
+        onOk: (i, b) => {
+          const a = b.dataset.a;
+          if (a === 'replay') { if (net.ready.again) net.ready.again.delete(0); return this.toReplay(); } // (not ready while watching it)
+          if (a === 'quit') return this._netQuit();
+          if (a === 'other') { net.ready.again = null; this.ui.hide('results'); return this._netQuickSetup(true); }
+          if (a === 'again' && !b.classList.contains('waiting')) this._netReady('again', b);
+        },
+      });
+      return;
+    }
     if (free) {
       this.ui.navigate('results', [...el.querySelectorAll('.btn')], {
         onOk: (i, b) => {
           if (b.dataset.a === 'replay') return this.toReplay();
           this._fade(() => {
             this.ui.hide('results');
-            if (b.dataset.a === 'again') { const s = this.session; s.raceNo = 6; for (const p of s.players) { p.credits = 3; p.alive = true; } this.nextRace(); }
+            // (a game that was on several phones goes on with player 1 alone)
+            if (b.dataset.a === 'again') { const s = this.session; s.raceNo = 6; for (const p of s.players) if (!s.solo || p.index === 0) { p.credits = 3; p.alive = true; } this.nextRace(); }
             else if (b.dataset.a === 'other') { this.toTitleQuiet(); this.toFreeRace(); }
             else this.toTitle();
           });
@@ -1450,7 +1570,7 @@ export class Game {
     if (!c) return '';
     const solo = this.session.players.length === 1;
     const nm = (x) => (x.human ? (solo ? 'TÚ' : `${x.player + 1}P`) : (x.short || x.name));
-    return `<div class="cupstand"><span class="cn">${c.done ? 'FINAL DE LA COPA' : 'COPA'}</span>${c.standings.map((x, i) => `<span class="cs${x.human ? ' me' : ''}"><i style="background:${x.css || truckDef(x.truckId).css}"></i>${i + 1}º ${esc(nm(x))} <b>${x.points}</b></span>`).join('')}</div>`;
+    return `<div class="cupstand"><span class="cn">${c.done ? 'FINAL DE LA COPA' : 'COPA'}</span>${c.standings.map((x, i) => `<span class="cs${x.human ? ' me' : ''}"><i style="background:${cssOf(x.css, x.truckId)}"></i>${i + 1}º ${esc(nm(x))} <b>${x.points | 0}</b></span>`).join('')}</div>`;
   }
 
   // The end of a cup: the three best on the podium, the trophy and the bonus
@@ -1483,9 +1603,9 @@ export class Game {
     }).join('');
     const el = this.ui.show('podium', `
       <div class="panel fade-in podium-panel">
-        <div class="head">${cup.name}</div>
+        <div class="head">${esc(cup.name)}</div>
         ${verdict}
-        <div class="table cup">${st.map((x, i) => `<div class="place ${isMe(x) ? 'me' : ''}">${i + 1}º</div><div class="${isMe(x) ? 'me' : ''}"><span class="chip" style="background:${x.css || truckDef(x.truckId).css}"></span>${esc(nm(x))}</div><div class="${isMe(x) ? 'me' : ''} pts">${x.points} PTS</div>`).join('')}</div>
+        <div class="table cup">${st.map((x, i) => `<div class="place ${isMe(x) ? 'me' : ''}">${i + 1}º</div><div class="${isMe(x) ? 'me' : ''}"><span class="chip" style="background:${cssOf(x.css, x.truckId)}"></span>${esc(nm(x))}</div><div class="${isMe(x) ? 'me' : ''} pts">${x.points | 0} PTS</div>`).join('')}</div>
         <div class="menu" style="padding-top:4px"><div class="btn primary">CONTINUAR</div></div>
       </div>`);
     const done = () => this._fade(() => {
@@ -1570,8 +1690,8 @@ export class Game {
     const d = truckDef(rec.c);
     return `<div class="laprec">RÉCORD DE VUELTA <b>${fmtTime(rec.t)}</b>${d ? ` · ${VEHICLE_INFO[rec.v]?.name || 'CAMIÓN'} ${d.name.toUpperCase()}` : ''}${this.lapRecordSet ? ' · <b>¡NUEVO!</b>' : ''}</div>`;
   }
-  _lostReason() {
-    return { last: 'Has llegado el último', ironman: 'Ironman ha llegado antes que tú', any: 'Un camión de la CPU ha llegado antes que tú' }[this.session.diff.rule];
+  _lostReason(rule) {
+    return { last: 'Has llegado el último', ironman: 'Ironman ha llegado antes que tú', any: 'Un camión de la CPU ha llegado antes que tú' }[rule || this.session.diff.rule];
   }
 
   // ------------------------------------------------------------------ shop
@@ -1744,8 +1864,11 @@ export class Game {
     this.paused = false;
     this._stallPause = false;
     this.audio.pause(false);
+    // (another phone can resume the race while this one is in the options)
+    if (this.touch.editing) { this.touch.edit(false); this.touch.onchange = null; this.saveOpt(); }
     this.ui.hide('pause');
     this.ui.hide('ctrlpick');
+    this.ui.hide('padedit');
     this.ui.hide('options');
     if ((this.state === 'race' || this.state === 'intro') && this.race) this.touch.show(this.race.racers.some(mine)); // a player out of credits only watches
     this.last = performance.now();
@@ -1759,7 +1882,8 @@ export class Game {
       { k: 'camera', name: 'CÁMARA', vals: ['classic', 'zoom', 'follow'], lab: { classic: 'CLÁSICA', zoom: 'DINÁMICA', follow: 'PERSECUCIÓN' } },
       { k: 'music', name: 'MÚSICA', vals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
       { k: 'sfx', name: 'EFECTOS', vals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
-      { k: 'voice', name: 'LOCUTOR', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } },
+      { k: 'voice', name: 'LOCUTOR', vals: ['es', 'en', false], lab: { es: 'ESPAÑOL', en: 'INGLÉS', false: 'NO' } },
+      { k: 'subs', name: 'SUBTÍTULOS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'haptics', name: 'VIBRACIÓN', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } },
       ...(canFullscreen() ? [{ k: 'fullscreen', name: 'PANTALLA COMPLETA', short: 'P. COMPLETA', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } }] : []),
       { k: 'touch', name: 'CONTROL TÁCTIL', short: 'TÁCTIL', pick: true, vals: ['buttons', 'stick', 'tilt'], lab: { buttons: 'BOTONES', stick: 'JOYSTICK', tilt: 'INCLINAR' } },
@@ -1767,9 +1891,11 @@ export class Game {
         { k: 'touchSide', name: 'MANDOS', vals: ['right', 'left'], lab: { right: 'DIESTRO', left: 'ZURDO' } },
         { k: 'touchSize', name: 'TAMAÑO BOTONES', short: 'BOTONES', vals: ['s', 'm', 'l'], lab: { s: 'PEQUEÑO', m: 'NORMAL', l: 'GRANDE' } },
         { k: 'nitroPos', name: 'BOTÓN DE NITRO', short: 'NITRO', vals: ['both', 'gas', 'steer'], lab: { both: 'LOS DOS', gas: 'EN EL GAS', steer: 'EN EL GIRO' } },
+        { k: 'padEdit', name: 'COLOCAR BOTONES', short: 'COLOCAR', pick: true, val: () => (this.touch.custom ? 'A TU GUSTO' : 'DE SERIE') },
       ] : []),
       { k: 'assist', name: 'DIRECCIÓN ASISTIDA', short: 'ASISTENCIA', vals: ['off', 'soft', 'strong'], lab: { off: 'NO', soft: 'SUAVE', strong: 'FUERTE' } },
       { k: 'guide', name: 'LÍNEA DE CARRERA', short: 'TRAZADA', vals: [true, false], lab: { true: 'SÍ', false: 'NO' } },
+      { k: 'cvd', name: 'COLORES DALTONISMO', short: 'DALTONISMO', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'autoGas', name: 'ACELERADOR AUTOMÁTICO', short: 'AUTO-GAS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
       { k: 'fps', name: 'MOSTRAR FPS', short: 'FPS', vals: [false, true], lab: { true: 'SÍ', false: 'NO' } },
     ];
@@ -1787,7 +1913,7 @@ export class Game {
     const paint = () => {
       defs.forEach((d) => {
         const v = o[d.k];
-        el.querySelector(`[data-k=${d.k}] .val`).textContent = d.lab ? d.lab[String(v)] : String(v);
+        el.querySelector(`[data-k=${d.k}] .val`).textContent = d.val ? d.val() : d.lab ? d.lab[String(v)] : String(v);
       });
       this.ui.fit(el); // the values can change the panel's size
     };
@@ -1833,10 +1959,15 @@ export class Game {
         onBack: close,
       });
     };
+    // the pad with its buttons loose, over the screen
+    const padEdit = () => {
+      el.style.visibility = 'hidden';
+      this._padEditor(() => { el.style.visibility = ''; paint(); this.ui.resume(nav); });
+    };
     const change = (i, b, dir) => {
       const d = defs.find((x) => x.k === b.dataset.k);
       if (!d) return;
-      if (d.pick) return pickTouch();
+      if (d.pick) return d.k === 'touch' ? pickTouch() : padEdit();
       const idx = d.vals.indexOf(o[d.k]);
       o[d.k] = d.vals[(idx + dir + d.vals.length) % d.vals.length];
       paint();
@@ -1848,6 +1979,9 @@ export class Game {
       if (d.k === 'camera' && this.race && this.state === 'race') this._raceCamera(false);
       if (d.k === 'fullscreen') { if (o.fullscreen) enterFullscreen(true); else exitFullscreen(); }
       if (d.k === 'guide' && this.race && !this.attract && !this.replayView) this._applyGuide();
+      if (d.k === 'voice') this.audio.setVoice(o.voice);
+      if (d.k === 'cvd') this._applyCvd();
+      if (d.k === 'subs' && !o.subs) this._subtitle(null);
       if (d.k === 'assist') {
         // also in the middle of a race (pause menu); the prize follows the strongest level used
         const lvl = ASSIST_LEVELS[o.assist] || 0;
@@ -1872,6 +2006,26 @@ export class Game {
     nav = this.ui.navigate('options', [...el.querySelectorAll('.btn')], {
       onOk: (i, b) => (b.dataset.k === 'back' ? done() : change(i, b, 1)),
       onLeft: (i, b) => change(i, b, -1), onRight: (i, b) => change(i, b, 1), onBack: done,
+    });
+  }
+
+  // COLOCAR BOTONES: each button of the race pad dragged where the thumbs want it, and
+  // the one touched last made bigger or smaller (kept per kind of control)
+  _padEditor(back) {
+    const el = this.ui.show('padedit', `<div class="panel fade-in padedit"><div class="head">COLOCAR BOTONES</div>
+      <div class="nethelp">Arrastra cada botón adonde te venga bien. El último que tocas crece o mengua con + y −.</div>
+      <div class="menu row-menu" style="padding-top:2px"><div class="btn sq" data-a="minus">−</div><div class="btn sq" data-a="plus">+</div><div class="btn" data-a="reset">DE SERIE</div><div class="btn primary" data-a="done">LISTO</div></div></div>`, 'passive');
+    this.touch.onchange = () => this.saveOpt();
+    this.touch.edit(true);
+    const close = () => { this.touch.edit(false); this.touch.onchange = null; this.saveOpt(); this.ui.hide('padedit'); back(); };
+    this.ui.navigate('padedit', [...el.querySelectorAll('.btn')], {
+      axis: 'h', start: 3,
+      onOk: (i, b) => {
+        const a = b.dataset.a;
+        if (a === 'done') return close();
+        if (a === 'reset') this.touch.resetLayout(); else this.touch.resize(a === 'plus' ? 1.12 : 1 / 1.12);
+      },
+      onBack: close,
     });
   }
 
@@ -1918,17 +2072,19 @@ export class Game {
         <p>Al acabar cada carrera puedes ver la <b>REPETICIÓN</b> con cámaras de televisión: el realizador automático no se pierde los saltos (a cámara lenta), los adelantamientos ni la meta. Elige cámara, camión y velocidad, salta por la línea de tiempo, y con el <b>MODO FOTO</b> congela la imagen, gira la cámara y guarda o comparte la foto.</p>
         <p><b>Teclado:</b> ← → girar · ↑ acelerar · ↓ frenar/marcha atrás · ENTER o ESPACIO nitro · ESC pausa.<br>
         <b>Mando:</b> stick o cruceta girar · A acelerar · B frenar · X/RB nitro · START pausa.<br>
-        <b>Táctil:</b> botones de giro a la izquierda, acelerar y nitro a la derecha, y otro nitro encima del giro (en Opciones: zurdos, tamaño, qué nitros se ven o joystick).</p>
+        <b>Táctil:</b> botones de giro a la izquierda, acelerar y nitro a la derecha, y otro nitro encima del giro (en Opciones: zurdos, tamaño, qué nitros se ven o joystick). Con <b>COLOCAR BOTONES</b> arrastras cada botón adonde te venga bien y lo haces más grande o más pequeño.</p>
+        <p><b>Accesibilidad</b> (Opciones): el <b>locutor</b> habla en español o en inglés, con <b>subtítulos</b> si quieres, y <b>COLORES DALTONISMO</b> cambia el verde y el rojo de la línea de carrera y de los marcadores por azul, amarillo y naranja.</p>
+        <p>Si dos camiones llegan casi a la vez y uno es tuyo, la <b>FOTO FINISH</b> lo decide: los últimos metros a cámara lenta y la foto desde la línea de meta, con la diferencia. El ganador lo celebra con <b>trompos</b>, y el público enloquece y dispara sus cámaras con tus saltos más largos. En la cámara de persecución, el barro y el agua salpican la lente.</p>
         <p>Recoge <b style="color:#79c2ff">nitros</b> y <b class="gold">bolsas de dinero</b> en la pista. Con el dinero mejora tu camión en el taller: neumáticos, amortiguadores, aceleración y velocidad punta (5 niveles cada uno), o compra más nitro.</p>
         <p>El campeonato va por <b>copas</b> de 4 carreras con puntos: al final de cada una, los tres primeros suben al <b>podio</b> y los jugadores que suben cobran un premio. En <b>LOGROS</b> están los 26 retos y tus estadísticas; muchos logros desbloquean <b>pinturas</b> para tu camión en el taller. El <b>DESAFÍO DEL DÍA</b> es una contrarreloj distinta cada día, con medallas y racha. Una de cada cinco carreras es con <b>lluvia</b>: la pista agarra menos. En el móvil puedes conducir <b>inclinando</b> el teléfono (Opciones → Control táctil).</p>
         <p>El campeonato se guarda solo: si sales del juego, <b>CONTINUAR</b> en el menú principal lo retoma. Una carrera que se quedó a medias vuelve a empezar desde la parrilla; una que ya habías terminado cuenta y sigues en el taller.</p>
-        <p><b>Cada uno en su móvil</b> (2 o 3 JUGADORES → EN DOS o TRES MÓVILES): todos en la misma WiFi o en el punto de acceso de uno. Un móvil pulsa CREAR PARTIDA y a los demás, en esa pantalla, les aparece sola la partida de su WiFi (o UNIRSE CON CÓDIGO con el número que enseña); sin internet, CREAR CON QR y UNIRSE CON QR (cada uno escanea el QR del otro). El jugador 1 pulsa EMPEZAR cuando están todos. Una pausa para a todos; si alguien sale, su camión sigue para la CPU.</p>
+        <p><b>Cada uno en su móvil</b> (2, 3 o 4 JUGADORES → EN DOS, TRES o CUATRO MÓVILES; con cuatro, solo así): todos en la misma WiFi o en el punto de acceso de uno. Un móvil pulsa CREAR PARTIDA y a los demás, en esa pantalla, les aparece sola la partida de su WiFi (o UNIRSE CON CÓDIGO con el número que enseña); sin internet, CREAR CON QR y UNIRSE CON QR (cada uno escanea el QR del otro). El jugador 1 pulsa EMPEZAR cuando están todos y elige <b>CAMPEONATO</b> o <b>CARRERA RÁPIDA</b> (circuito, vueltas, luz, lluvia y si corre la CPU); al acabar, <b>REVANCHA</b> cuando todos estén listos u <b>OTRO CIRCUITO</b>. Con cuatro jugadores, el cuarto conduce el camión gris de Ironman. Una pausa para a todos; si alguien sale, su camión sigue para la CPU.</p>
         <p>Puedes correr con el <b>camión</b> (más agarre y velocidad punta, gana los empujones) o con el <b>buggy</b> del <i>Track Pak</i> (acelera más y aterriza mejor los saltos, pero es ligero y derrapa más).</p>
         <p>Hay 16 circuitos (los 8 de la recreativa y los 8 del <i>Track Pak</i>), cada uno en los dos sentidos. En <b>CARRERA LIBRE</b> puedes probar cualquiera, con el sentido y la luz que quieras.</p>
         <p>En <b>CONTRARRELOJ</b> (Carrera libre → Modo) corres contra el <b>fantasma</b> de tu mejor tiempo y el <b>fantasma dorado de Ironman</b>: gánale para la medalla de <b>oro</b>; a menos del 5 % es <b>plata</b> y a menos del 12 %, <b>bronce</b>. Pellizca la pista para acercar o alejar la cámara.</p>
         <p class="credits"><b>Créditos.</b> Remake de aficionado de <i>Ivan "Ironman" Stewart's Super Off Road</i> © 1989 Leland Corporation.
         Música: «Hotrock», «Exhilarate», «Cool Rock», «Ready Aim Fire», «Neolith» y «Twisted» de Kevin MacLeod (incompetech.com), licencia Creative Commons Atribución 4.0.
-        Texturas de tierra: Poly Haven (CC0). Fuentes Russo One y Teko (SIL OFL). Locutor: Piper (voz en_US-ryan). Motor 3D: Three.js (MIT). Modelos 3D hechos con Blender.</p>
+        Texturas de tierra: Poly Haven (CC0). Fuentes Russo One y Teko (SIL OFL). Locutor: Piper (voces es_ES-davefx, CC0, y en_US-ryan). Motor 3D: Three.js (MIT). Modelos 3D hechos con Blender.</p>
       </div><div class="menu row-menu" style="padding-top:0"><div class="btn primary" data-a="back">VOLVER</div><div class="btn" data-a="tutor">HACER EL TUTORIAL</div></div></div>`);
     const body = el.querySelector('.help-body');
     this.ui.navigate('help', [...el.querySelectorAll('.menu .btn')], {
@@ -2015,3 +2171,4 @@ export class Game {
 }
 
 installNet(Game);
+installPhotoFinish(Game);

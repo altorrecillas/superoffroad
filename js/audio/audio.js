@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import { engineLoop, noiseLoop, crowdLoop, oneShot } from './synth.js';
-import { mine } from '../sim/race.js';
+import { mine, COUNTDOWN } from '../sim/race.js';
 
 const ENGINE_RPM = [1000, 2800, 5200];
 const BUGGY_REV = 1.3;
@@ -11,7 +11,7 @@ const GEARS = [7.5, 12.5, 18, 24.5, 33];
 const VOICES = ['welcome', 'ready', 'go', 'final_lap', 'winner', 'ironman_wins', 'race_over', 'game_over', 'new_record', 'continue',
   'track_fandango', 'track_huevos', 'track_sidewinder', 'track_bigdukes', 'track_blaster', 'track_hurricane', 'track_cliffhanger', 'track_wipeout',
   'track_redoubt', 'track_riotrio', 'track_leapin', 'track_cutoff', 'track_boulder', 'track_pigbog', 'track_shortcut', 'track_volcano',
-  'lead', 'ironman_lead', 'big_air', 'wrong_way', 'lap_record', 'time_trial'];
+  'lead', 'ironman_lead', 'big_air', 'wrong_way', 'lap_record', 'time_trial', 'photo_finish', 'rematch'];
 const MUSIC = { title: ['title'], race: ['race1', 'race2', 'race3', 'race4'], shop: ['shop'], results: ['shop'] };
 const _v = new THREE.Vector3();
 
@@ -56,13 +56,34 @@ export class Audio {
       progress((i + 1) / (jobs.length + 1) * 0.7);
       await new Promise((r) => setTimeout(r, 0));
     }
-    // announcer clips
-    await Promise.all(VOICES.map((k) => fetch(`assets/voice/${k}.mp3`).then((r) => r.arrayBuffer()).then((b) => new Promise((res) => ctx.decodeAudioData(b, res, () => res(null))))
-      .then((buf) => { if (buf) this.buffers['v_' + k] = buf; }).catch(() => {})));
+    // announcer clips, in the language chosen (Spanish unless English is); a bad mobile
+    // connection does not hold the game: after a few seconds it starts and they arrive later
+    await Promise.race([this._loadVoice(this.opt.voice === 'en' ? 'en' : 'es'), new Promise((r) => setTimeout(r, 8000))]);
     progress(1);
     // crowd ambience bed
     this.crowd = this._loop(this.buffers.crowd, this.sfxBus, 0);
     this.ready = true;
+  }
+
+  // the announcer's clips in one language (the other is loaded only if chosen; the
+  // last language asked for wins when the option is changed quickly)
+  async _loadVoice(lang) {
+    this._wantLang = lang;
+    const ctx = this.ctx, dir = lang === 'en' ? 'assets/voice' : 'assets/voice/es';
+    const got = {};
+    await Promise.all(VOICES.map((k) => fetch(`${dir}/${k}.mp3`).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => (b ? new Promise((res) => ctx.decodeAudioData(b, res, () => res(null))) : null))
+      .then((buf) => { if (buf) got[k] = buf; }).catch(() => {})));
+    if (lang !== this._wantLang) return;
+    // (offline, a language never heard before has no clips: keep the ones there are)
+    if (!Object.keys(got).length && this.voiceLang) { this._wantLang = this.voiceLang; return; }
+    for (const k of VOICES) this.buffers['v_' + k] = got[k] || null;
+    this.voiceLang = lang;
+  }
+  // the options changed the announcer: 'es', 'en' or false (none)
+  setVoice(v) {
+    this.setVolumes(this.opt);
+    const lang = v === 'en' ? 'en' : 'es';
+    if (v !== false && this.ctx && lang !== (this._wantLang || this.voiceLang)) this._loadVoice(lang);
   }
 
   unlock() {
@@ -98,6 +119,7 @@ export class Audio {
     const t = this.ctx.currentTime;
     for (const tr of this.trucks) tr.out.gain.setTargetAtTime(on ? 0 : 1, t, 0.05);
     if (this.musicGain) this.musicGain.gain.setTargetAtTime(on ? 0.35 : 1, t, 0.2);
+    if (this.mfx) this.mfx.lp.frequency.setTargetAtTime(on ? 700 : 20000, t, 0.15); // muffled, as if through a wall
   }
 
   _loop(buf, dest, gain = 1, rate = 1) {
@@ -144,6 +166,7 @@ export class Audio {
     s.start(now + 0.05);
     this.voiceSrc = s;
     this.voiceEnd = now + 0.05 + b.duration;
+    if (this.onsay) this.onsay(key, this.voiceLang, b.duration); // subtitles
   }
 
   // ------------------------------------------------------------------ music
@@ -166,6 +189,7 @@ export class Audio {
       g.gain.cancelScheduledValues(t);
       g.gain.setValueAtTime(0, t);
       g.gain.setTargetAtTime(1, t + 0.05, 0.5);
+      this._musicNeutral();
       el.src = `assets/music/${name}.mp3`;
       // a newer track interrupts the previous play() (AbortError): only the latest counts
       const token = (this._musicToken = (this._musicToken || 0) + 1);
@@ -186,11 +210,70 @@ export class Audio {
     el.crossOrigin = 'anonymous';
     el.preload = 'auto';
     el.setAttribute('playsinline', '');
-    const src = this.ctx.createMediaElementSource(el);
-    const g = this.ctx.createGain();
+    const ctx = this.ctx;
+    const src = ctx.createMediaElementSource(el);
+    const g = ctx.createGain();
     g.gain.value = 0;
-    src.connect(g).connect(this.musicBus);
+    // the race shapes the music (_musicDyn): a low-pass (pause, countdown, slow motion),
+    // and shelves and a little gain that lift it in a close fight and on the last lap
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 20000; lp.Q.value = 0.7;
+    const lo = ctx.createBiquadFilter(); lo.type = 'lowshelf'; lo.frequency.value = 160; lo.gain.value = 0;
+    const hi = ctx.createBiquadFilter(); hi.type = 'highshelf'; hi.frequency.value = 3200; hi.gain.value = 0;
+    const dyn = ctx.createGain(); dyn.gain.value = 1;
+    src.connect(g).connect(lp).connect(lo).connect(hi).connect(dyn).connect(this.musicBus);
+    // a faster last lap goes up in pitch too, like the arcade's hurry-up music
+    el.preservesPitch = false; el.mozPreservesPitch = false; el.webkitPreservesPitch = false;
     this.musicEl = el; this.musicGain = g; this.musicSrc = src;
+    this.mfx = { lp, lo, hi, dyn, rate: 1, fight: 0 };
+  }
+  // a new track starts plain
+  _musicNeutral() {
+    const M = this.mfx;
+    if (!M) return;
+    const t = this.ctx.currentTime;
+    M.lo.gain.setTargetAtTime(0, t, 0.05); M.hi.gain.setTargetAtTime(0, t, 0.05); M.dyn.gain.setTargetAtTime(1, t, 0.05);
+    if (!this.paused) M.lp.frequency.setTargetAtTime(20000, t, 0.05);
+    M.rate = 1; M.fight = 0;
+    if (this.musicEl) this.musicEl.playbackRate = 1;
+  }
+
+  // The music follows the race: muffled while the lights count down and opening at the
+  // green, lifted (brighter, a little louder) in a close fight between one of this
+  // device's trucks and another, a touch faster on the last lap, slowed and dulled in
+  // slow motion (the photo finish, the replays' slow shots)
+  _musicDyn(dt, race) {
+    const M = this.mfx;
+    if (!M || !this.musicEl) return;
+    const racing = !!race && /^race/.test(this.musicName || '');
+    let fight = 0, final = false, counting = false;
+    if (racing && race.state !== 'done') {
+      counting = race.state === 'countdown' && race.time > -COUNTDOWN + 0.05;
+      for (const r of race.racers) {
+        if (!mine(r) || r.finished) continue;
+        if (race.state === 'race' && r.lap >= race.laps - 1) final = true;
+        const t = r.truck;
+        for (const o of race.racers) {
+          if (o === r) continue;
+          const d = Math.hypot(o.truck.x - t.x, o.truck.z - t.z);
+          // close on the track itself (not across a crossing)
+          if (d < 14 && Math.abs((o.prog || 0) - (r.prog || 0)) < 16) fight = Math.max(fight, 1 - d / 14);
+        }
+      }
+    }
+    M.fight += (fight - M.fight) * Math.min(1, dt * (fight > M.fight ? 3 : 0.8));
+    const slow = racing && (this.timeScale ?? 1) < 0.95;
+    const now = this.ctx.currentTime, f = M.fight;
+    const cut = this.paused ? 700 : slow ? 1600 : counting ? 1100 : 20000;
+    M.lp.frequency.setTargetAtTime(cut, now, cut > 10000 ? 0.12 : 0.25);
+    M.lo.gain.setTargetAtTime(f * 3.5 + (final ? 1.5 : 0), now, 0.3);
+    M.hi.gain.setTargetAtTime(f * 4 + (final ? 2 : 0), now, 0.3);
+    M.dyn.gain.setTargetAtTime(1 + f * 0.18 + (final ? 0.1 : 0), now, 0.3);
+    const rate = slow ? 0.85 : final ? 1.05 : 1;
+    M.rate += (rate - M.rate) * Math.min(1, dt * 1.5);
+    if (Math.abs(M.rate - rate) < 0.003) M.rate = rate;
+    // (in steps of 1 %: a media element is not asked to change speed every frame)
+    const step = Math.round(M.rate * 100) / 100;
+    if (this.musicEl.playbackRate !== step) { try { this.musicEl.playbackRate = step; } catch (e) { /* not now */ } }
   }
   _stopMusic() {
     if (!this.musicEl) return;
@@ -261,9 +344,12 @@ export class Audio {
 
   update(dt, race, camera, quiet) {
     if (!this.ready || !race || this.ctx.state !== 'running') return;
+    this._musicDyn(dt, race);
     const now = this.ctx.currentTime;
     const tc = 0.04;
     this.excite = Math.max(0, this.excite - dt * 0.25);
+    const win = race.state === 'done' && race.finishOrder[0];
+    if (win && win.truck.slip >= 6.5 && win.truck.speed < 6) this.excite = Math.max(this.excite, 0.65); // the winner's donuts
     if (this.crowd) this.crowd.g.gain.setTargetAtTime((quiet ? 0.05 : 0.09) + this.excite * 0.35, now, 0.3);
     // countdown beeps
     if (race.state === 'countdown') {
@@ -271,7 +357,7 @@ export class Audio {
       if (n !== this.lastCount && n <= 3 && n >= 1) this.sfx('beep', { vol: 0.6, vary: 0 });
       this.lastCount = n;
     }
-    const outGain = this.paused ? 0 : quiet ? 0.32 : 1;
+    const outGain = this.paused || this.hush ? 0 : quiet ? 0.32 : 1; // hush: the photo finish's picture
     const slow = this._slowRate();
     for (const tv of this.trucks) {
       const t = tv.r.truck;
@@ -340,7 +426,10 @@ export class Audio {
           break;
         }
         case 'bump': this.sfx('thud', { vol: Math.min(1, ev[3] / 10) * 0.8 }); this.sfx('clank', { vol: Math.min(1, ev[3] / 12) * 0.5, rate: 1.2 }); this.excite = Math.min(1, this.excite + 0.2); break;
-        case 'land': if (ev[2] > 3.5) { this.sfx('land', { vol: Math.min(1, (ev[2] - 3) / 8) * vol }); if (ev[2] > 8) this.excite = Math.min(1, this.excite + 0.25); } break;
+        case 'land':
+          if (ev[2] > 3.5) { this.sfx('land', { vol: Math.min(1, (ev[2] - 3) / 8) * vol }); if (ev[2] > 8) this.excite = Math.min(1, this.excite + 0.25); }
+          if (human && ev[3] > 0.5) this.excite = Math.min(1, this.excite + 0.5); // the crowd roars at the player's big jumps
+          break;
         case 'pickup': this.sfx(ev[2] === 'money' ? 'cash' : 'pickup', { vol: human ? 0.85 : 0.35, vary: 0 }); break;
         case 'lap': if (human) { this.sfx('lap', { vol: 0.5, vary: 0 }); if (ev[2] === race.laps - 1) this.announce('final_lap'); } break;
         case 'finish':

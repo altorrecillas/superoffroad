@@ -93,6 +93,7 @@ export class TruckSim {
     const st = this.stats;
     this.events.length = 0;
     if (this.frozen) { inp = NO_INPUT; }
+    if (inp.spin) return this._spin(dt, inp, track);
     const ch = Math.cos(this.h), sh = Math.sin(this.h);
     let vf = this.vx * ch + this.vz * sh;
     let vl = -this.vx * sh + this.vz * ch;
@@ -199,6 +200,26 @@ export class TruckSim {
     this.vf = this.vx * Math.cos(this.h) + this.vz * Math.sin(this.h);
     this.speed = Math.hypot(this.vx, this.vz);
     this._walls(track);
+  }
+
+  // A celebration donut (the race is over): round a point beside the truck with the
+  // tail out and the tyres smoking. Placed rather than simulated, so it never wanders
+  // off into a barrier. inp: { spin, steer: the side of the point, cx, cz, r, k: 0..1 the
+  // tail coming out, wk: 0..1 the speed of the turns (slowing at the end) }
+  _spin(dt, inp, track) {
+    const s = inp.steer < 0 ? -1 : 1, R = inp.r || 1, W = 3.6 * Math.max(0.05, inp.wk ?? 1);
+    const a = Math.atan2(this.z - inp.cz, this.x - inp.cx) + s * W * dt;
+    const px = this.x, pz = this.z;
+    this.x = inp.cx + Math.cos(a) * R; this.z = inp.cz + Math.sin(a) * R;
+    this.vx = (this.x - px) / dt; this.vz = (this.z - pz) / dt;
+    this.h = wrapAngle(a + s * (Math.PI / 2 + 0.55 * (inp.k ?? 1)));
+    this.w = s * W;
+    this.y = this.groundHeight(track); this.vy = 0; this.air = false; this.hAbove = 0; this.airTime = 0;
+    this.water = track.waterAt(this.x, this.z);
+    this.throttle = W > 1 ? 1 : 0.3; this.steer = s; this.slip = 7 * Math.min(1, W / 2.5); this.traction = 1; this.wallHit = 0;
+    if (this.nitroT > 0) this.nitroT -= dt;
+    this.speed = Math.hypot(this.vx, this.vz);
+    this.vf = this.vx * Math.cos(this.h) + this.vz * Math.sin(this.h);
   }
 
   _willFly(track, shocks) {

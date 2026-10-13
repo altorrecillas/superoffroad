@@ -28,6 +28,15 @@
       <div class="hint">Cargando…</div>
     </div>
   </div>
+  <script>
+    // the game's code has not even started (a browser too old for it, or a file that did
+    // not arrive): say what to do instead of loading forever
+    setTimeout(function () {
+      if (window.__booting) return;
+      var h = document.querySelector('#loading .hint');
+      if (h) h.textContent = 'Está tardando demasiado. Si no arranca, actualiza el navegador (en el iPhone, iOS 16.4 o posterior) y recarga la página.';
+    }, 25000);
+  </script>
   <script type="module" src="./js/main.js"></script>
 </body>
 </html>

@@ -160,7 +160,7 @@ const CROWD_VERT = /* glsl */ `
   attribute vec4 iPos;     // xyz, phase
   attribute vec3 iShirt;
   attribute vec4 iMisc;    // skin tone, hair tone, frame, facing
-  uniform float uTime, uExcite, uFlash;
+  uniform float uTime, uExcite, uFlash, uBurst;
   uniform vec3 uCamRight;
   varying vec2 vUv;
   varying vec3 vShirt;
@@ -191,9 +191,9 @@ const CROWD_VERT = /* glsl */ `
     vSkin = mix(vec3(0.95, 0.75, 0.6), vec3(0.32, 0.2, 0.13), iMisc.x);
     vHair = mix(vec3(0.05, 0.04, 0.03), vec3(0.55, 0.4, 0.25), iMisc.y);
     vShade = 0.8 + 0.2 * fract(ph * 13.1);
-    // camera flashes at night
+    // camera flashes at night, and a burst of them at any hour for a big moment
     float fl = fract(uTime * 0.37 + ph * 91.7);
-    vShade += uFlash * step(0.9965 - uExcite * 0.004, fl) * 14.0;
+    vShade += max(uFlash, uBurst) * step(0.9965 - uExcite * 0.004 - uBurst * 0.03, fl) * 14.0;
     vec4 mv = viewMatrix * vec4(wp, 1.0);
     vFogDepth = -mv.z;
     gl_Position = projectionMatrix * mv;
@@ -466,7 +466,7 @@ export class Stadium {
     this.crowdMat = new THREE.ShaderMaterial({
       vertexShader: CROWD_VERT, fragmentShader: CROWD_FRAG,
       uniforms: {
-        uAtlas: { value: crowdAtlas() }, uTime: { value: 0 }, uExcite: { value: 0.2 }, uFlash: { value: 0 },
+        uAtlas: { value: crowdAtlas() }, uTime: { value: 0 }, uExcite: { value: 0.2 }, uFlash: { value: 0 }, uBurst: { value: 0 },
         uCamRight: { value: new THREE.Vector3(1, 0, 0) }, uLight: { value: new THREE.Color(1, 1, 1) },
         fogColor: { value: new THREE.Color(0xc9d8e2) }, fogNear: { value: 220 }, fogFar: { value: 700 },
       },
@@ -493,6 +493,8 @@ export class Stadium {
   }
 
   cheer(amount = 1) { this.excite = Math.min(1, this.excite + amount); }
+  // the stands light up with camera flashes (a player's big jump, the winner)
+  flashes(amount = 1) { this.burst = Math.min(1, (this.burst || 0) + amount); this.cheer(amount * 0.6); }
 
   update(dt, camera) {
     this.time += dt;
@@ -500,6 +502,8 @@ export class Stadium {
     const u = this.crowdMat.uniforms;
     u.uTime.value = this.time;
     u.uExcite.value = this.excite;
+    if (this.burst > 0) this.burst = Math.max(0, this.burst - dt * 0.55);
+    u.uBurst.value = this.burst || 0;
     const e = camera.matrixWorld.elements;
     u.uCamRight.value.set(e[0], e[1], e[2]);
     if (this.flagTime) this.flagTime.value = this.time;

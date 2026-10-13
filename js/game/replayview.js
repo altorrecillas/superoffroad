@@ -75,6 +75,7 @@ export class ReplayView {
       g.ui.hide('replay');
       g.audio.voiceOff = false;
       g.audio.timeScale = 1;
+      g.audio.pause(false); // (a replay left paused or ended: the sound and music back as they were)
       g.world.showRings(true);
       g.replayView = null;
       this.onExit();
@@ -104,6 +105,7 @@ export class ReplayView {
       while (this.acc >= DT && n < 60) {
         if (this.step >= this.rec.length) { this._ended(); break; }
         w.savePrev();
+        this.player.prepare(this.race, this.step);
         this.race.step(DT, this.player.inputsAt(this.step));
         this.step++;
         for (const ev of this.race.events) evs.push(ev);
@@ -179,7 +181,7 @@ export class ReplayView {
   _seekWork() {
     const t0 = performance.now(), w = this.g.world;
     while (this.step < this.seekTo && performance.now() - t0 < 14) {
-      for (let k = 0; k < 120 && this.step < this.seekTo; k++) { this.race.step(DT, this.player.inputsAt(this.step)); this.step++; }
+      for (let k = 0; k < 120 && this.step < this.seekTo; k++) { this.player.prepare(this.race, this.step); this.race.step(DT, this.player.inputsAt(this.step)); this.step++; }
     }
     w.savePrev();
     w._skipMarks = true;
